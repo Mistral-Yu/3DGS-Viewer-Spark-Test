@@ -1,0 +1,14 @@
+{
+  "name": "3dgs-viewer-spark-test",
+  "private": true,
+  "scripts": {
+    "build": "esbuild viewer.js --bundle --alias:three=./vendor/three/three.module.js --format=iife --platform=browser --target=es2020 --outfile=viewer.bundle.js",
+    "check": "npm run build && node --check viewer.js && htmlhint index.html",
+    "dev": "http-server . -p 4173 -c-1 --cors"
+  },
+  "devDependencies": {
+    "esbuild": "^0.28.0",
+    "htmlhint": "^1.7.1",
+    "http-server": "^14.1.1"
+  }
+}
