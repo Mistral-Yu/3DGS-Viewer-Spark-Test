@@ -24,7 +24,9 @@ This repository is kept intentionally small for GitHub Pages. Large sample model
 
 ### GitHub Pages
 
-Open the published page, then use `Open File` or drag a splat file into the viewer.
+Live demo: https://mistral-yu.github.io/3DGS-Viewer-Spark-Test/
+
+Open the page and load local splat files with `Open File` or drag-and-drop.
 
 ### Direct open
 
