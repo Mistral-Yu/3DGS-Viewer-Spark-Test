@@ -24,6 +24,11 @@ function startSparkViewer() {
     const EXPOSURE_LIMITS = { min: -6, max: 6 };
     const POSITION_RANGE_LIMITS = { min: 0.05, max: 8 };
     const SCALE_LIMITS = { min: 0.001, max: 1000 };
+    const LIGHT_INTENSITY_LIMITS = { min: 0, max: 100000 };
+    const LIGHT_POSITION_LIMITS = { min: -100000, max: 100000 };
+    const LIGHT_COLOR = "#ffd48a";
+    const LIGHT_HELPER_COLOR = "#fff1b5";
+    const LIGHT_OCCLUDER_LIMIT = 96;
     const TRANSLATE_LIMITS = { min: -100000, max: 100000 };
     const FPS_KEYS = new Set(["KeyW", "KeyA", "KeyS", "KeyD", "KeyQ", "KeyE", "ShiftLeft", "ShiftRight"]);
     const BACKGROUNDS = {
@@ -103,7 +108,18 @@ function startSparkViewer() {
       infoSize: document.getElementById("info-size"),
       infoSource: document.getElementById("info-source"),
       infoSplats: document.getElementById("info-splats"),
+      lightControlsSection: document.getElementById("light-controls-section"),
+      lightEmpty: document.getElementById("light-empty"),
+      lightGizmoButton: document.getElementById("light-gizmo-button"),
+      lightIntensityInput: document.getElementById("light-intensity-input"),
+      lightIntensityRange: document.getElementById("light-intensity-range"),
+      lightList: document.getElementById("light-list"),
+      lightName: document.getElementById("light-name"),
+      lightXInput: document.getElementById("light-x-input"),
+      lightYInput: document.getElementById("light-y-input"),
+      lightZInput: document.getElementById("light-z-input"),
       lensChip: document.getElementById("lens-chip"),
+      addPointLightButton: document.getElementById("add-point-light-button"),
       addPrimitiveButton: document.getElementById("add-primitive-button"),
       primitiveSelect: document.getElementById("primitive-select"),
       modeButtons: Array.from(document.querySelectorAll("[data-mode]")),
@@ -160,12 +176,14 @@ function startSparkViewer() {
       clamp,
       combineGsplat,
       div,
+      dot = dyno.Dot,
       dynoBlock,
       dynoConst,
       dynoFloat,
       dynoVec3,
       gsplatNormal,
       length,
+      max = dyno.Max,
       mul,
       split,
       splitGsplat,
@@ -326,13 +344,13 @@ function startSparkViewer() {
     const isIntermediateNumericInput = (value) =>
       value === "" || value === "-" || value === "." || value === "-." || value === "+";
 
-    const createWorldNormalModifier = (transform) =>
+    const createWorldNormalModifier = () =>
       dynoBlock({ gsplat: Gsplat }, { gsplat: Gsplat }, ({ gsplat }) => {
         if (!gsplat) {
           throw new Error("No gsplat input");
         }
-        const transformedNormal = transform.applyDir(gsplatNormal(gsplat));
-        const normal = div(transformedNormal, length(transformedNormal));
+        const rawNormal = gsplatNormal(gsplat);
+        const normal = div(rawNormal, length(rawNormal));
         const rgb = add(
           mul(normal, dynoConst("float", 0.5)),
           dynoConst("float", 0.5),
@@ -340,14 +358,12 @@ function startSparkViewer() {
         return { gsplat: combineGsplat({ gsplat, rgb }) };
       });
 
-    const createDepthColorModifier = ({ maxDepth }, transform, splatToView) =>
+    const createDepthColorModifier = ({ maxDepth }, splatToView) =>
       dynoBlock({ gsplat: Gsplat }, { gsplat: Gsplat }, ({ gsplat }) => {
         if (!gsplat) {
           throw new Error("No gsplat input");
         }
-        let center = splitGsplat(gsplat).outputs.center;
-        center = transform.apply(center);
-        center = splatToView.apply(center);
+        const center = splatToView.apply(splitGsplat(gsplat).outputs.center);
         const depth = clamp(
           div(length(center), maxDepth),
           dynoConst("float", 0),
@@ -356,12 +372,12 @@ function startSparkViewer() {
         return { gsplat: combineGsplat({ gsplat, r: depth, g: depth, b: depth }) };
       });
 
-    const createPositionColorModifier = ({ minCorner, span, scaleFactor }, transform) =>
+    const createPositionColorModifier = ({ minCorner, span, scaleFactor }) =>
       dynoBlock({ gsplat: Gsplat }, { gsplat: Gsplat }, ({ gsplat }) => {
         if (!gsplat) {
           throw new Error("No gsplat input");
         }
-        const center = transform.apply(splitGsplat(gsplat).outputs.center);
+        const center = splitGsplat(gsplat).outputs.center;
         const scaledSpan = mul(span, scaleFactor);
         const normalized = clamp(
           div(sub(center, minCorner), scaledSpan),
@@ -370,6 +386,33 @@ function startSparkViewer() {
         );
         const { x: r, y: g, z: b } = split(normalized).outputs;
         return { gsplat: combineGsplat({ gsplat, r, g, b }) };
+      });
+
+    const createPointLightColorModifier = ({
+      lightIntensities,
+      lightPositions,
+      lightCount,
+    }) =>
+      dynoBlock({ gsplat: Gsplat }, { gsplat: Gsplat }, ({ gsplat }) => {
+        if (!gsplat) {
+          throw new Error("No gsplat input");
+        }
+        const outputs = splitGsplat(gsplat).outputs;
+        const center = outputs.center;
+        let rgb = outputs.rgb;
+        const floatZero = dynoConst("float", 0);
+        const floatOne = dynoConst("float", 1);
+        const floatEps = dynoConst("float", 0.0001);
+        let lightBoost = floatZero;
+        for (let lightIndex = 0; lightIndex < lightCount; lightIndex += 1) {
+          const lightPosition = lightPositions[lightIndex];
+          const lightIntensity = max(lightIntensities[lightIndex], floatZero);
+          const lightVector = sub(center, lightPosition);
+          const lightDistanceSq = max(dot(lightVector, lightVector), floatEps);
+          lightBoost = add(lightBoost, div(lightIntensity, lightDistanceSq));
+        }
+        rgb = mul(rgb, add(floatOne, lightBoost));
+        return { gsplat: combineGsplat({ gsplat, rgb }) };
       });
 
     const getFileExtension = (name) => (name.split(".").pop() || "").toLowerCase();
@@ -928,6 +971,8 @@ function startSparkViewer() {
 
         this.splatSceneRoot = new THREE.Group();
         this.scene.add(this.splatSceneRoot);
+        this.lightSceneRoot = new THREE.Group();
+        this.scene.add(this.lightSceneRoot);
         this.modelRoot = null;
         this.rotationPivot = null;
 
@@ -980,7 +1025,10 @@ function startSparkViewer() {
         this.currentMesh = null;
         this.sceneItems = [];
         this.sceneItemSerial = 0;
+        this.sceneLights = [];
+        this.sceneLightSerial = 0;
         this.selectedSceneItemId = null;
+        this.selectedLightId = null;
         this.baseLocalBounds = null;
         this.baseCenterBounds = null;
         this.bounds = null;
@@ -997,6 +1045,17 @@ function startSparkViewer() {
         this.hoverReadout = "Hover -";
         this.pickedColors = [];
         this.pickedColorSerial = 0;
+        this.lightOccluderSamples = [];
+        this.runtimeLightOccluders = [];
+        this.activeLightCount = 0;
+        this.activeOccluderCount = 0;
+        this.lightHandles = {
+          intensities: [],
+          occluderOpacities: [],
+          occluderPositions: [],
+          occluderRadii: [],
+          positions: [],
+        };
         this.gridHelper = null;
         this.axesHelper = null;
         this.axisLabelGroup = null;
@@ -1041,6 +1100,10 @@ function startSparkViewer() {
           gridScaleMode: "auto",
           gridScaleValue: 1,
           inspectorTab: "scene",
+          lightIntensity: 20,
+          lightX: 0,
+          lightY: 0,
+          lightZ: 0,
           moveSpeedFactor: 1,
           opacity: 1,
           positionRangeScale: 1,
@@ -1066,6 +1129,7 @@ function startSparkViewer() {
 
       async init() {
         this.dom.stage.append(this.renderer.domElement);
+        this.syncUiScale();
         this.bindUi();
         if (this.dom.sceneRenderSection && this.dom.sceneTransformSection) {
           this.dom.sceneRenderSection.parentElement?.insertBefore(
@@ -1089,6 +1153,8 @@ function startSparkViewer() {
         this.syncInspectorTabs();
         this.syncExportList();
         this.syncGridControls();
+        this.syncSelectedLightControls(true);
+        this.syncLightList();
         if (this.dom.colorspaceChip) {
           this.dom.colorspaceChip.textContent = "Display sRGB";
         }
@@ -1102,7 +1168,10 @@ function startSparkViewer() {
         this.updateRenderChip("Idle");
         this.updateStatus("Viewer ready");
         this.orbitControls.addEventListener("change", () => this.invalidateRender());
-        window.addEventListener("resize", () => this.onResize());
+        window.addEventListener("resize", () => {
+          this.syncUiScale();
+          this.onResize();
+        });
         this.renderer.domElement.addEventListener("dblclick", (event) => this.focusPick(event));
         this.renderer.domElement.addEventListener("contextmenu", (event) => event.preventDefault());
         this.renderer.domElement.addEventListener("pointerdown", (event) => {
@@ -1195,6 +1264,9 @@ function startSparkViewer() {
         this.dom.clearPickedColorsButton?.addEventListener("click", () => {
           this.clearPickedColors();
         });
+        this.dom.addPointLightButton?.addEventListener("click", () => {
+          this.addPointLight();
+        });
         this.bindNumberPair({
           input: this.dom.depthRangeInput,
           range: this.dom.depthRangeRange,
@@ -1244,6 +1316,12 @@ function startSparkViewer() {
           limits: () => ({ min: 1, max: Math.max(this.sceneItems.length, 1) }),
           onChange: (value, options) => this.setSceneSelectionIndex(value, options),
         });
+        this.bindNumberPair({
+          input: this.dom.lightIntensityInput,
+          range: this.dom.lightIntensityRange,
+          limits: LIGHT_INTENSITY_LIMITS,
+          onChange: (value, options) => this.setSelectedLightIntensity(value, options),
+        });
         this.dom.gridScaleSelect?.addEventListener("change", (event) => {
           this.setGridScaleMode(event.target.value);
         });
@@ -1283,6 +1361,7 @@ function startSparkViewer() {
 
         this.dom.resetViewButton.addEventListener("click", () => this.resetView());
         this.dom.toggleGizmoButton.addEventListener("click", () => this.toggleTransformGizmo());
+        this.dom.lightGizmoButton?.addEventListener("click", () => this.toggleTransformGizmo());
         this.dom.gizmoTranslateButton.addEventListener("click", () => this.setTransformGizmoMode("translate"));
         this.dom.gizmoRotateButton.addEventListener("click", () => this.setTransformGizmoMode("rotate"));
         this.dom.gizmoScaleButton.addEventListener("click", () => this.setTransformGizmoMode("scale"));
@@ -1303,6 +1382,9 @@ function startSparkViewer() {
 
         this.dom.resetRotationButton.addEventListener("click", () => this.resetTransform());
         [
+          this.dom.lightXInput,
+          this.dom.lightYInput,
+          this.dom.lightZInput,
           this.dom.rotationXInput,
           this.dom.rotationYInput,
           this.dom.rotationZInput,
@@ -1311,6 +1393,19 @@ function startSparkViewer() {
           this.dom.translateYInput,
           this.dom.translateZInput,
         ].forEach((input) => {
+          if (!input) {
+            return;
+          }
+          if (input === this.dom.lightXInput || input === this.dom.lightYInput || input === this.dom.lightZInput) {
+            input.addEventListener("input", () => this.applySelectedLightPosition(false));
+            input.addEventListener("blur", () => this.applySelectedLightPosition(true));
+            input.addEventListener("keydown", (event) => {
+              if (event.key === "Enter") {
+                this.applySelectedLightPosition(true);
+              }
+            });
+            return;
+          }
           input.addEventListener("input", () => this.applyTransformFromInputs(false, false));
           input.addEventListener("blur", () => this.applyTransformFromInputs(true, true));
           input.addEventListener("keydown", (event) => {
@@ -1336,6 +1431,19 @@ function startSparkViewer() {
           }
           this.applyTransformFromGizmo();
         });
+      }
+
+      syncUiScale() {
+        const dpr = Math.max(window.devicePixelRatio || 1, 1);
+        const compensation = THREE.MathUtils.clamp(1 / dpr, 0.5, 1);
+        document.documentElement.style.setProperty("--ui-scale", compensation.toFixed(4));
+      }
+
+      ensureDynoHandleArray(target, count, factory) {
+        while (target.length < count) {
+          target.push(factory(target.length));
+        }
+        return target;
       }
 
       createSceneItemRecord(name, source) {
@@ -1369,6 +1477,7 @@ function startSparkViewer() {
             renderMode: "beauty",
             shLevel: 3,
           },
+          lightExposureHandle: dynoFloat(1, `itemLightExposure-${this.sceneItemSerial}`),
           transform: {
             rotationX: 0,
             rotationY: 0,
@@ -1381,8 +1490,40 @@ function startSparkViewer() {
         };
       }
 
+      createLightRecord() {
+        const root = new THREE.Group();
+        const bulb = new THREE.Mesh(
+          new THREE.SphereGeometry(0.14, 18, 18),
+          new THREE.MeshBasicMaterial({ color: LIGHT_COLOR }),
+        );
+        const halo = new THREE.Mesh(
+          new THREE.RingGeometry(0.18, 0.28, 28),
+          new THREE.MeshBasicMaterial({
+            color: LIGHT_HELPER_COLOR,
+            opacity: 0.82,
+            side: THREE.DoubleSide,
+            transparent: true,
+          }),
+        );
+        halo.rotation.x = -Math.PI / 2;
+        root.add(halo, bulb);
+        this.lightSceneRoot.add(root);
+        return {
+          id: `scene-light-${++this.sceneLightSerial}`,
+          intensity: 20,
+          name: `Point Light ${this.sceneLightSerial}`,
+          root,
+          visible: true,
+          position: new THREE.Vector3(),
+        };
+      }
+
       getSelectedItem() {
         return this.sceneItems.find((item) => item.id === this.selectedSceneItemId) || null;
+      }
+
+      getSelectedLight() {
+        return this.sceneLights.find((light) => light.id === this.selectedLightId) || null;
       }
 
       syncSelectionRefs(item) {
@@ -1465,19 +1606,132 @@ function startSparkViewer() {
         if (this.dom.shSelect) {
           this.dom.shSelect.value = String(this.state.shLevel);
         }
+        this.setSectionDisabled(this.dom.sceneRenderSection, !item);
+        this.setSectionDisabled(this.dom.sceneTransformSection, !item);
+      }
+
+      syncSelectedLightControls(syncInputs = true) {
+        const light = this.getSelectedLight();
+        this.state.lightIntensity = light?.intensity ?? 20;
+        this.state.lightX = light?.position?.x ?? 0;
+        this.state.lightY = light?.position?.y ?? 0;
+        this.state.lightZ = light?.position?.z ?? 0;
+        if (this.dom.lightName) {
+          this.dom.lightName.textContent = light?.name ?? "No light selected";
+        }
+        if (this.dom.lightIntensityRange) {
+          this.dom.lightIntensityRange.value = String(Math.min(clampNumber(this.state.lightIntensity, LIGHT_INTENSITY_LIMITS), 100));
+          this.dom.lightIntensityRange.disabled = !light;
+        }
+        if (syncInputs && this.dom.lightIntensityInput) {
+          this.dom.lightIntensityInput.value = this.state.lightIntensity.toFixed(this.state.lightIntensity < 10 ? 2 : 1);
+        }
+        [this.dom.lightIntensityInput, this.dom.lightXInput, this.dom.lightYInput, this.dom.lightZInput].forEach((input) => {
+          if (input) {
+            input.disabled = !light;
+          }
+        });
+        if (syncInputs) {
+          if (this.dom.lightXInput) {
+            this.dom.lightXInput.value = formatNumber(this.state.lightX, Math.abs(this.state.lightX) < 10 ? 2 : 1);
+          }
+          if (this.dom.lightYInput) {
+            this.dom.lightYInput.value = formatNumber(this.state.lightY, Math.abs(this.state.lightY) < 10 ? 2 : 1);
+          }
+          if (this.dom.lightZInput) {
+            this.dom.lightZInput.value = formatNumber(this.state.lightZ, Math.abs(this.state.lightZ) < 10 ? 2 : 1);
+          }
+        }
+        this.setSectionDisabled(this.dom.lightControlsSection, !light);
+      }
+
+      setSectionDisabled(section, disabled, allowedButtons = []) {
+        if (!section) {
+          return;
+        }
+        section.classList.toggle("is-disabled", Boolean(disabled));
+        const allowSet = new Set(allowedButtons.filter(Boolean));
+        section.querySelectorAll("input, select, textarea, button").forEach((element) => {
+          if (allowSet.has(element)) {
+            return;
+          }
+          element.disabled = Boolean(disabled);
+        });
+      }
+
+      updateLightVisual(light) {
+        if (!light?.root) {
+          return;
+        }
+        light.root.position.copy(light.position);
+        light.root.visible = light.visible;
+        const bulb = light.root.children[1];
+        const halo = light.root.children[0];
+        if (bulb?.material?.color) {
+          bulb.material.color.set(LIGHT_COLOR);
+        }
+        if (halo) {
+          const haloScale = THREE.MathUtils.clamp(0.8 + Math.log10(Math.max(light.intensity, 1) + 1) * 0.32, 0.8, 2.5);
+          halo.scale.setScalar(haloScale);
+        }
+      }
+
+      getRenderModeForItem(item) {
+        if (!item) {
+          return "beauty";
+        }
+        return item.id === this.selectedSceneItemId
+          ? (item.settings.renderMode || "beauty")
+          : "beauty";
+      }
+
+      getGlobalExposureScale() {
+        return 2 ** clampNumber(this.state.exposure, EXPOSURE_LIMITS);
+      }
+
+      getBeautyExposureScaleForItem(item) {
+        return this.getGlobalExposureScale()
+          * (2 ** clampNumber(item?.settings?.exposure ?? 0, EXPOSURE_LIMITS));
+      }
+
+      selectLight(lightId, announce = true) {
+        const light = this.sceneLights.find((entry) => entry.id === lightId) || null;
+        this.selectedLightId = light?.id ?? null;
+        this.selectedSceneItemId = null;
+        this.syncSelectionRefs(null);
+        this.applySelectedTransformState(true);
+        this.syncSelectedSplatControls(true);
+        this.syncSelectedLightControls(true);
+        this.applyRenderMode(false);
+        this.updateNormalizeFieldState();
+        this.updateMetaUi();
+        this.syncSceneList();
+        this.syncLightList();
+        this.syncTransformGizmo();
+        this.updateTransformGizmoButtons();
+        this.clearHoverReadout();
+        this.renderPickedColors();
+        if (announce && light) {
+          this.updateStatus(`Selected ${light.name}`);
+        }
+        this.invalidateRender();
       }
 
       selectSceneItem(itemId, announce = true) {
         const item = this.sceneItems.find((entry) => entry.id === itemId) || null;
         this.selectedSceneItemId = item?.id ?? null;
+        this.selectedLightId = null;
         this.syncSelectionRefs(item);
         this.applySelectedTransformState(true);
         this.syncSelectedSplatControls(true);
+        this.syncSelectedLightControls(true);
         this.updatePositionModifierBounds();
         this.applyRenderMode(false);
         this.updateNormalizeFieldState();
         this.updateMetaUi();
         this.syncSceneList();
+        this.syncLightList();
+        this.updateTransformGizmoButtons();
         if (this.hoverPointer) {
           this.updateHoverReadout();
         } else {
@@ -1508,16 +1762,31 @@ function startSparkViewer() {
       }
 
       updateTransformGizmoButtons() {
+        const lightSelected = Boolean(this.getSelectedLight());
+        const effectiveMode = lightSelected ? "translate" : this.state.transformGizmoMode;
         this.dom.toggleGizmoButton.classList.toggle("is-active", this.state.showGizmo);
         this.dom.toggleGizmoButton.textContent = this.state.showGizmo ? "Gizmo On" : "Gizmo Off";
-        this.dom.gizmoTranslateButton.classList.toggle("is-active", this.state.transformGizmoMode === "translate");
-        this.dom.gizmoRotateButton.classList.toggle("is-active", this.state.transformGizmoMode === "rotate");
-        this.dom.gizmoScaleButton.classList.toggle("is-active", this.state.transformGizmoMode === "scale");
+        if (this.dom.lightGizmoButton) {
+          this.dom.lightGizmoButton.classList.toggle("is-active", this.state.showGizmo && lightSelected);
+          this.dom.lightGizmoButton.textContent = this.state.showGizmo && lightSelected
+            ? "Move Gizmo On"
+            : "Move Gizmo Off";
+        }
+        this.dom.gizmoTranslateButton.classList.toggle("is-active", effectiveMode === "translate");
+        this.dom.gizmoRotateButton.classList.toggle("is-active", effectiveMode === "rotate");
+        this.dom.gizmoScaleButton.classList.toggle("is-active", effectiveMode === "scale");
+        this.dom.gizmoRotateButton.disabled = lightSelected;
+        this.dom.gizmoScaleButton.disabled = lightSelected;
       }
 
       syncTransformGizmo() {
+        const light = this.getSelectedLight();
         const item = this.getSelectedItem();
-        if (!this.state.showGizmo || !item || !item.visible) {
+        if (
+          !this.state.showGizmo
+          || (light && !light.visible)
+          || (!light && (!item || !item.visible))
+        ) {
           this.transformControls.detach();
           this.transformControls.visible = false;
           this.transformControls.enabled = false;
@@ -1525,8 +1794,10 @@ function startSparkViewer() {
           this.invalidateRender();
           return;
         }
-        const mode = this.state.transformGizmoMode;
-        const target = mode === "translate" ? item.modelRoot : item.rotationPivot;
+        const mode = light ? "translate" : this.state.transformGizmoMode;
+        const target = light
+          ? light.root
+          : (mode === "translate" ? item.modelRoot : item.rotationPivot);
         if (!target) {
           this.transformControls.detach();
           this.transformControls.visible = false;
@@ -1544,6 +1815,17 @@ function startSparkViewer() {
       }
 
       applyTransformFromGizmo() {
+        const light = this.getSelectedLight();
+        if (light?.root) {
+          light.position.copy(light.root.position);
+          this.state.lightX = light.position.x;
+          this.state.lightY = light.position.y;
+          this.state.lightZ = light.position.z;
+          this.syncSelectedLightControls(true);
+          this.refreshLightingModel();
+          this.forceVisualRefresh(3);
+          return;
+        }
         const item = this.getSelectedItem();
         if (!item || !item.modelRoot || !item.rotationPivot) {
           return;
@@ -1586,6 +1868,11 @@ function startSparkViewer() {
           this.refreshHelpers();
           this.updateMetaUi();
           this.updateCameraClipping();
+          this.syncLightingRuntimeState();
+          if (this.hoverPointer) {
+            this.updateHoverReadout();
+          }
+          this.renderPickedColors();
           if (refresh?.announce) {
             this.updateStatus(
               `Applied splat transform: rot ${this.state.rotationX.toFixed(1)} / ${this.state.rotationY.toFixed(1)} / ${this.state.rotationZ.toFixed(1)} deg, move ${this.state.translateX.toFixed(2)} / ${this.state.translateY.toFixed(2)} / ${this.state.translateZ.toFixed(2)}, scale ${this.state.scale.toFixed(2)}`,
@@ -1804,15 +2091,249 @@ function startSparkViewer() {
         this.syncExportList();
       }
 
+      syncLightList() {
+        if (!this.dom.lightList || !this.dom.lightEmpty) {
+          return;
+        }
+        this.dom.lightList.replaceChildren();
+        this.dom.lightEmpty.hidden = this.sceneLights.length > 0;
+        this.sceneLights.forEach((light) => {
+          const row = document.createElement("div");
+          row.className = "scene-item";
+          if (light.id === this.selectedLightId) {
+            row.classList.add("is-active");
+          }
+
+          const mainButton = document.createElement("button");
+          mainButton.type = "button";
+          mainButton.className = "scene-item-main";
+          mainButton.title = "Select this point light.";
+          mainButton.addEventListener("click", () => this.selectLight(light.id));
+
+          const name = document.createElement("p");
+          name.className = "scene-item-name";
+          name.textContent = light.name;
+
+          const meta = document.createElement("p");
+          meta.className = "scene-item-meta";
+          meta.textContent =
+            `${light.visible ? "On" : "Off"} / I ${formatNumber(light.intensity, light.intensity < 10 ? 2 : 1)}`;
+          mainButton.append(name, meta);
+
+          const toggleButton = document.createElement("button");
+          toggleButton.type = "button";
+          toggleButton.className = "scene-item-button";
+          if (!light.visible) {
+            toggleButton.classList.add("is-hidden");
+          }
+          toggleButton.textContent = light.visible ? "On" : "Off";
+          toggleButton.title = "Toggle this point light.";
+          toggleButton.addEventListener("click", () => this.toggleLightVisibility(light.id));
+
+          const deleteButton = document.createElement("button");
+          deleteButton.type = "button";
+          deleteButton.className = "scene-item-button";
+          deleteButton.textContent = "Delete";
+          deleteButton.title = "Delete this point light.";
+          deleteButton.addEventListener("click", () => this.removeLight(light.id));
+
+          row.append(mainButton, toggleButton, deleteButton);
+          this.dom.lightList.append(row);
+        });
+      }
+
+      addPointLight() {
+        const light = this.createLightRecord();
+        const anchor = this.sceneBoundsSphere?.center?.clone() ?? this.orbitControls.target.clone();
+        const radius = Math.max(this.sceneBoundsSphere?.radius ?? 1, 1);
+        light.position.copy(anchor.add(new THREE.Vector3(radius * 0.6, radius * 0.4 + 0.75, radius * 0.35)));
+        light.intensity = Math.max(radius * radius * 4, 12);
+        this.updateLightVisual(light);
+        this.sceneLights.push(light);
+        this.selectLight(light.id, false);
+        this.syncLightList();
+        this.refreshLightingModel({ forceModifierRebuild: true });
+        this.updateStatus(`Added ${light.name}`);
+      }
+
+      toggleLightVisibility(lightId) {
+        const light = this.sceneLights.find((entry) => entry.id === lightId);
+        if (!light) {
+          return;
+        }
+        light.visible = !light.visible;
+        this.updateLightVisual(light);
+        this.syncLightList();
+        this.syncTransformGizmo();
+        this.refreshLightingModel();
+        this.updateStatus(`${light.name} ${light.visible ? "shown" : "hidden"}`);
+      }
+
+      removeLight(lightId) {
+        const index = this.sceneLights.findIndex((entry) => entry.id === lightId);
+        if (index < 0) {
+          return;
+        }
+        const [light] = this.sceneLights.splice(index, 1);
+        this.lightSceneRoot.remove(light.root);
+        light.root.traverse?.((child) => {
+          child.geometry?.dispose?.();
+          child.material?.dispose?.();
+        });
+        const wasSelected = light.id === this.selectedLightId;
+        if (wasSelected) {
+          const nextLight = this.sceneLights[index] || this.sceneLights[index - 1] || null;
+          this.selectedLightId = nextLight?.id ?? null;
+        }
+        this.syncSelectedLightControls(true);
+        this.syncLightList();
+        this.syncTransformGizmo();
+        this.updateTransformGizmoButtons();
+        this.refreshLightingModel({ forceModifierRebuild: true });
+        this.updateStatus(`Removed ${light.name}`);
+      }
+
+      applySelectedLightIntensity(updateStatus = true, syncInput = true) {
+        const light = this.getSelectedLight();
+        const intensity = clampNumber(this.state.lightIntensity, LIGHT_INTENSITY_LIMITS);
+        this.state.lightIntensity = intensity;
+        if (this.dom.lightIntensityRange) {
+          this.dom.lightIntensityRange.value = String(Math.min(intensity, 100));
+        }
+        if (syncInput && this.dom.lightIntensityInput) {
+          this.dom.lightIntensityInput.value = intensity.toFixed(intensity < 10 ? 2 : 1);
+        }
+        if (!light) {
+          return;
+        }
+        light.intensity = intensity;
+        this.updateLightVisual(light);
+        this.syncLightList();
+        this.refreshLightingModel();
+        if (updateStatus) {
+          this.updateStatus(`${light.name} intensity updated`);
+        }
+      }
+
+      setSelectedLightIntensity(value, { commit = true, syncInput = true } = {}) {
+        this.state.lightIntensity = commit ? clampNumber(value, LIGHT_INTENSITY_LIMITS) : Number(value);
+        this.applySelectedLightIntensity(true, syncInput);
+      }
+
+      applySelectedLightPosition(commit = false) {
+        const light = this.getSelectedLight();
+        const xRaw = this.dom.lightXInput?.value?.trim() ?? "0";
+        const yRaw = this.dom.lightYInput?.value?.trim() ?? "0";
+        const zRaw = this.dom.lightZInput?.value?.trim() ?? "0";
+        this.state.lightX = commit
+          ? clampNumber(xRaw, LIGHT_POSITION_LIMITS)
+          : (Number.isFinite(Number(xRaw)) ? Number(xRaw) : this.state.lightX);
+        this.state.lightY = commit
+          ? clampNumber(yRaw, LIGHT_POSITION_LIMITS)
+          : (Number.isFinite(Number(yRaw)) ? Number(yRaw) : this.state.lightY);
+        this.state.lightZ = commit
+          ? clampNumber(zRaw, LIGHT_POSITION_LIMITS)
+          : (Number.isFinite(Number(zRaw)) ? Number(zRaw) : this.state.lightZ);
+        if (light) {
+          light.position.set(this.state.lightX, this.state.lightY, this.state.lightZ);
+          this.updateLightVisual(light);
+          if (this.transformControls.object === light.root) {
+            this.transformControls.attach(light.root);
+          }
+          this.syncLightList();
+          this.refreshLightingModel();
+        }
+        if (commit) {
+          this.syncSelectedLightControls(true);
+        }
+      }
+
+      collectLightOccluderSamples() {
+        const visibleItems = this.sceneItems.filter((item) => item.visible && item.mesh);
+        if (!visibleItems.length) {
+          return [];
+        }
+        const perItemBudget = Math.max(4, Math.floor(LIGHT_OCCLUDER_LIMIT / Math.max(visibleItems.length, 1)));
+        const samples = [];
+        visibleItems.forEach((item) => {
+          const sourceEntries = item.hoverEntries?.length
+            ? item.hoverEntries
+            : (this.createMeshHoverEntries(item, perItemBudget * 12) || []);
+          if (!sourceEntries.length) {
+            return;
+          }
+          const step = Math.max(1, Math.ceil(sourceEntries.length / perItemBudget));
+          for (let index = 0; index < sourceEntries.length && samples.length < LIGHT_OCCLUDER_LIMIT; index += step) {
+            const entry = sourceEntries[index];
+            const radius = Math.max(
+              Number(entry.scale?.x ?? 0.05) || 0.05,
+              Number(entry.scale?.y ?? 0.05) || 0.05,
+              Number(entry.scale?.z ?? 0.05) || 0.05,
+            );
+            samples.push({
+              itemId: item.id,
+              localPosition: entry.position.clone(),
+              opacity: THREE.MathUtils.clamp(Number(entry.alpha ?? 1) || 0, 0, 1),
+              radius,
+            });
+            if (samples.length >= LIGHT_OCCLUDER_LIMIT) {
+              break;
+            }
+          }
+        });
+        return samples;
+      }
+
+      syncLightingRuntimeState() {
+        this.syncVisibleSceneItemTransforms();
+        this.lightSceneRoot.updateMatrixWorld(true);
+        const activeLights = this.sceneLights.filter((light) => light.visible);
+        this.activeLightCount = activeLights.length;
+        this.ensureDynoHandleArray(
+          this.lightHandles.positions,
+          this.activeLightCount,
+          (index) => dynoVec3(new THREE.Vector3(), `viewerLightPosition${index}`),
+        );
+        this.ensureDynoHandleArray(
+          this.lightHandles.intensities,
+          this.activeLightCount,
+          (index) => dynoFloat(0, `viewerLightIntensity${index}`),
+        );
+        const lightWorldPosition = new THREE.Vector3();
+        activeLights.forEach((light, index) => {
+          light.root.updateMatrixWorld(true);
+          light.root.getWorldPosition(lightWorldPosition);
+          light.position.copy(lightWorldPosition);
+          this.lightHandles.positions[index].value.copy(lightWorldPosition);
+          this.lightHandles.intensities[index].value = light.intensity;
+        });
+        this.activeOccluderCount = 0;
+        this.runtimeLightOccluders = [];
+      }
+
+      refreshLightingModel({ forceModifierRebuild = false } = {}) {
+        const previousLightCount = this.activeLightCount;
+        this.syncLightingRuntimeState();
+        const needsRebuild = forceModifierRebuild
+          || previousLightCount !== this.activeLightCount;
+        if (needsRebuild) {
+          this.applyRenderMode(false);
+          return;
+        }
+        if (this.hoverPointer) {
+          this.updateHoverReadout();
+        }
+        this.renderPickedColors();
+        this.invalidateRender();
+      }
+
       getSceneExposureScale() {
-        return this.state.renderMode === "beauty"
-          ? 2 ** clampNumber(this.state.exposure, EXPOSURE_LIMITS)
-          : 1;
+        return this.getGlobalExposureScale();
       }
 
       getItemExposureScale(item) {
-        return this.state.renderMode === "beauty"
-          ? 2 ** clampNumber(item?.settings?.exposure ?? 0, EXPOSURE_LIMITS)
+        return this.getRenderModeForItem(item) === "beauty"
+          ? this.getBeautyExposureScaleForItem(item)
           : 1;
       }
 
@@ -1939,6 +2460,7 @@ function startSparkViewer() {
           baseLinearRgb: toLinearRgbArray(bestEntry.entry.color),
           itemId: item.id,
           label: bestEntry.entry.label || `Splat ${bestEntry.index + 1}`,
+          localPosition: bestEntry.entry.position.clone(),
           splatIndex: bestEntry.index,
         };
       }
@@ -1976,6 +2498,7 @@ function startSparkViewer() {
           baseLinearRgb: toLinearRgbArray(bestEntry.entry.color),
           itemId: item.id,
           label: bestEntry.entry.label || `Splat ${bestEntry.index + 1}`,
+          localPosition: bestEntry.entry.position.clone(),
           screenDistanceSq: bestDistance,
           splatIndex: bestEntry.index,
           viewDepth: bestDepth,
@@ -2018,6 +2541,11 @@ function startSparkViewer() {
           baseLinearRgb: toLinearRgbArray(bestSplat.color ?? bestSplat.rgb ?? bestSplat.rgba),
           itemId: item.id,
           label: `Splat ${bestIndex + 1}`,
+          localPosition: new THREE.Vector3(
+            bestSplat.center?.x ?? bestSplat.position?.x ?? 0,
+            bestSplat.center?.y ?? bestSplat.position?.y ?? 0,
+            bestSplat.center?.z ?? bestSplat.position?.z ?? 0,
+          ),
           splatIndex: bestIndex,
         };
       }
@@ -2066,6 +2594,11 @@ function startSparkViewer() {
           baseLinearRgb: toLinearRgbArray(bestSplat.color ?? bestSplat.rgb ?? bestSplat.rgba),
           itemId: item.id,
           label: `Splat ${bestIndex + 1}`,
+          localPosition: new THREE.Vector3(
+            bestSplat.center?.x ?? bestSplat.position?.x ?? 0,
+            bestSplat.center?.y ?? bestSplat.position?.y ?? 0,
+            bestSplat.center?.z ?? bestSplat.position?.z ?? 0,
+          ),
           screenDistanceSq: bestDistance,
           splatIndex: bestIndex,
           viewDepth: bestDepth,
@@ -2128,16 +2661,56 @@ function startSparkViewer() {
         return this.resolveColorSampleFromHit(item, this.lastHoverHit.point);
       }
 
+      getSampleWorldPosition(item, sample) {
+        if (!item?.mesh || !sample?.localPosition) {
+          return null;
+        }
+        return sample.localPosition.clone().applyMatrix4(item.mesh.matrixWorld);
+      }
+
+      evaluateLightTransmission(lightPosition, targetPosition, sourceItemId = null) {
+        void lightPosition;
+        void targetPosition;
+        void sourceItemId;
+        return 1;
+      }
+
+      getDisplayLinearColorForSample(item, sample) {
+        if (!item || !sample) {
+          return [0, 0, 0];
+        }
+        const itemMode = this.getRenderModeForItem(item);
+        const splatExposureScale = itemMode === "beauty" ? this.getBeautyExposureScaleForItem(item) : 1;
+        const linear = sample.baseLinearRgb.map((value) => Math.max(value * splatExposureScale, 0));
+        if (itemMode !== "beauty" || !this.sceneLights.length) {
+          return linear;
+        }
+        const worldPosition = this.getSampleWorldPosition(item, sample);
+        if (!worldPosition) {
+          return linear;
+        }
+        let lightSum = 0;
+        this.sceneLights.forEach((light) => {
+          if (!light.visible) {
+            return;
+          }
+          const distanceSq = Math.max(light.position.distanceToSquared(worldPosition), 0.0001);
+          lightSum += (light.intensity / distanceSq) * this.evaluateLightTransmission(light.position, worldPosition, item.id);
+        });
+        const lightMultiplier = 1 + lightSum;
+        return [
+          Math.max(linear[0] * lightMultiplier, 0),
+          Math.max(linear[1] * lightMultiplier, 0),
+          Math.max(linear[2] * lightMultiplier, 0),
+        ];
+      }
+
       getPickedColorDisplay(entry) {
         const item = this.getSceneItemById(entry.itemId);
         if (!item) {
           return null;
         }
-        const sceneExposureScale = this.getSceneExposureScale();
-        const itemExposureScale = this.getItemExposureScale(item);
-        const displayLinear = entry.baseLinearRgb.map(
-          (value) => Math.max(value * sceneExposureScale * itemExposureScale, 0),
-        );
+        const displayLinear = this.getDisplayLinearColorForSample(item, entry);
         const displayAlpha = Math.max(entry.alpha * (item.settings.opacity ?? 1), 0);
         return {
           alpha: displayAlpha,
@@ -2240,6 +2813,7 @@ function startSparkViewer() {
           id: `picked-color-${++this.pickedColorSerial}`,
           itemId: sample.itemId,
           label: sample.label,
+          localPosition: sample.localPosition?.clone?.() ?? null,
           splatIndex: sample.splatIndex,
         });
         this.renderPickedColors();
@@ -2326,6 +2900,7 @@ function startSparkViewer() {
         if (updateChip) {
           this.updateRenderChip("Opacity updated");
         }
+        this.syncLightingRuntimeState();
         this.renderPickedColors();
         this.invalidateRender();
       }
@@ -2562,6 +3137,7 @@ function startSparkViewer() {
         if (updateChip) {
           this.updateRenderChip(`Exposure ${formatExposureLabel(exposure)}`);
         }
+        this.syncLightingRuntimeState();
         this.renderPickedColors();
         this.invalidateRender();
       }
@@ -2589,6 +3165,7 @@ function startSparkViewer() {
         if (updateChip) {
           this.updateRenderChip(`Selected exposure ${formatExposureLabel(exposure)}`);
         }
+        this.syncLightingRuntimeState();
         this.renderPickedColors();
         this.invalidateRender();
       }
@@ -2599,10 +3176,9 @@ function startSparkViewer() {
       }
 
       syncMeshExposure() {
-        const sceneExposureScale = this.getSceneExposureScale();
         this.sceneItems.forEach((item) => {
           if (item.mesh?.recolor) {
-            const exposureScale = sceneExposureScale * this.getItemExposureScale(item);
+            const exposureScale = this.getItemExposureScale(item);
             item.mesh.recolor.setRGB(exposureScale, exposureScale, exposureScale);
           }
         });
@@ -2977,6 +3553,7 @@ function startSparkViewer() {
         this.updateCameraClipping();
         this.syncTransformGizmo();
         this.syncSceneList();
+        this.refreshLightingModel();
         this.updateStatus(`${item.modelMeta.name} ${item.visible ? "shown" : "hidden"}`);
         this.forceVisualRefresh(4);
       }
@@ -3000,6 +3577,7 @@ function startSparkViewer() {
         this.refreshHelpers();
         this.updateCameraClipping();
         this.syncTransformGizmo();
+        this.refreshLightingModel({ forceModifierRebuild: true });
         this.updateMetaUi();
         this.updateStatus(`Removed ${item.modelMeta.name}`);
         if (!this.sceneItems.length) {
@@ -3016,16 +3594,29 @@ function startSparkViewer() {
       clearScene() {
         this.sceneItems.forEach((item) => this.disposeSceneItem(item));
         this.sceneItems = [];
+        this.sceneLights.forEach((light) => {
+          this.lightSceneRoot.remove(light.root);
+          light.root.traverse?.((child) => {
+            child.geometry?.dispose?.();
+            child.material?.dispose?.();
+          });
+        });
+        this.sceneLights = [];
         this.pickedColors = [];
         this.selectedSceneItemId = null;
+        this.selectedLightId = null;
         this.syncSelectionRefs(null);
         this.resetModelMeta();
         this.depthRangeIsAuto = true;
         this.sceneBounds = null;
         this.sceneBoundsSphere = null;
         this.applySelectedTransformState(true);
+        this.syncSelectedSplatControls(true);
+        this.syncSelectedLightControls(true);
         this.syncTransformGizmo();
         this.refreshHelpers();
+        this.syncLightList();
+        this.refreshLightingModel({ forceModifierRebuild: true });
         this.renderPickedColors();
         this.forceVisualRefresh(3);
       }
@@ -3173,6 +3764,7 @@ function startSparkViewer() {
           mesh.userData.sceneItemId = sceneItem.id;
           this.sceneItems.push(sceneItem);
           this.selectedSceneItemId = sceneItem.id;
+          this.selectedLightId = null;
           this.syncSelectionRefs(sceneItem);
 
           this.depthRangeIsAuto = true;
@@ -3216,9 +3808,11 @@ function startSparkViewer() {
           }
           this.configureDepthRangeFromBounds();
           this.refreshHelpers();
-          this.applyRenderMode(false);
+          this.syncSelectedLightControls(true);
+          this.refreshLightingModel({ forceModifierRebuild: true });
           this.updateMetaUi();
           this.syncSceneList();
+          this.syncLightList();
           this.setProgress("Ready", 1);
           this.updateRenderChip("Ready");
           this.updateStatus(`Loaded ${fileName}`);
@@ -3578,9 +4172,12 @@ function startSparkViewer() {
         }
         const sample = selectedItem.hoverEntries?.length
           ? this.resolvePrimitivePointerSample(selectedItem, pointer)
-          : null;
+          : this.resolvePackedPointerSample(selectedItem, pointer);
         if (sample) {
-          colorText = clipPadText(formatHoverColor(sample.baseLinearRgb), 11);
+          colorText = clipPadText(
+            formatHoverColor(this.getDisplayLinearColorForSample(selectedItem, sample)),
+            11,
+          );
         }
         this.hoverReadout = `Item ${itemText} | Color ${colorText}`;
         this.setHoverChip(itemText, colorText);
@@ -3836,6 +4433,7 @@ function startSparkViewer() {
       }
 
       applyRenderMode(updateChip = true) {
+        this.syncLightingRuntimeState();
         this.sceneItems.forEach((item) => {
           if (!item.mesh) {
             return;
@@ -3848,23 +4446,32 @@ function startSparkViewer() {
           item.mesh.worldModifiers = item.baseWorldModifier ? [item.baseWorldModifier] : undefined;
           item.mesh.updateMatrixWorld(true);
           item.mesh.context?.transform?.updateFromMatrix(item.mesh.matrixWorld);
-          if (itemMode === "depth") {
+          if (itemMode === "beauty") {
+            const worldModifiers = [];
+            if (item.baseWorldModifier) {
+              worldModifiers.push(item.baseWorldModifier);
+            }
+            if (this.activeLightCount > 0) {
+              worldModifiers.push(createPointLightColorModifier({
+                lightCount: this.activeLightCount,
+                lightIntensities: this.lightHandles.intensities,
+                lightPositions: this.lightHandles.positions,
+              }));
+            }
+            item.mesh.worldModifiers = worldModifiers.length ? worldModifiers : undefined;
+          } else if (itemMode === "depth") {
             item.mesh.enableWorldToView = true;
             item.mesh.worldModifier = createDepthColorModifier(
               this.depthModifierHandles,
-              item.mesh.context.transform,
               item.mesh.context.worldToView,
             );
           } else if (itemMode === "position") {
             if (item.id === this.selectedSceneItemId) {
               this.updatePositionModifierBounds();
             }
-            item.mesh.worldModifier = createPositionColorModifier(
-              this.positionModifierHandles,
-              item.mesh.context.transform,
-            );
+            item.mesh.worldModifier = createPositionColorModifier(this.positionModifierHandles);
           } else if (itemMode === "worldNormal") {
-            item.mesh.worldModifier = createWorldNormalModifier(item.mesh.context.transform);
+            item.mesh.worldModifier = createWorldNormalModifier();
           }
           item.mesh.updateGenerator();
         });
@@ -4054,7 +4661,7 @@ function startSparkViewer() {
       }
 
       setInspectorTab(tab) {
-        const nextTab = ["scene", "color", "info", "export"].includes(tab) ? tab : "scene";
+        const nextTab = ["scene", "color", "light", "info", "export"].includes(tab) ? tab : "scene";
         this.state.inspectorTab = nextTab;
         this.syncInspectorTabs();
         this.updateRenderChip(`${nextTab[0].toUpperCase()}${nextTab.slice(1)} tab`);

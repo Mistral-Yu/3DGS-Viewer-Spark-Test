@@ -138,7 +138,7 @@
             <div class="hud-cluster">
               <span class="hud-chip" id="lens-chip">14 mm</span>
               <span class="hud-chip" id="speed-chip">1.00 u/s</span>
-              <span class="hud-chip" id="colorspace-chip" title="Display output is sRGB. Color grading and authored primitive colors use linear sRGB math.">Display sRGB</span>
+              <span class="hud-chip" id="colorspace-chip" title="Display output is sRGB. Color grading, authored primitive colors, and point-light math use linear sRGB.">Display sRGB</span>
             </div>
             <div class="hud-cluster">
               <span class="hud-chip" id="fps-chip">FPS -</span>
@@ -159,7 +159,7 @@
           <div class="section-heading">
             <p class="section-label">Inspector</p>
             <div class="section-title-row">
-              <h2>Scene / Color / Info / Export</h2>
+              <h2>Scene / Color / Light / Info / Export</h2>
               <span
                 class="hint-badge"
                 title="Switch tabs to manage scene items, apply color grading, inspect metadata, or export splats."
@@ -170,6 +170,7 @@
           <div class="inspector-tabs" role="tablist" aria-label="Inspector tabs">
             <button class="segmented-button is-active" type="button" id="tab-scene-button" data-inspector-tab="scene" role="tab" aria-selected="true" title="Scene item visibility, selection, transforms, and splat rendering controls.">Scene</button>
             <button class="segmented-button" type="button" id="tab-color-button" data-inspector-tab="color" role="tab" aria-selected="false" title="Linear color grading controls.">Color</button>
+            <button class="segmented-button" type="button" id="tab-light-button" data-inspector-tab="light" role="tab" aria-selected="false" title="Manage point lights that relight visible splats in beauty mode.">Light</button>
             <button class="segmented-button" type="button" id="tab-info-button" data-inspector-tab="info" role="tab" aria-selected="false" title="Loaded splat metadata and load progress.">Info</button>
             <button class="segmented-button" type="button" id="tab-export-button" data-inspector-tab="export" role="tab" aria-selected="false" title="Choose which splats to save.">Export</button>
           </div>
@@ -454,6 +455,52 @@
                 </div>
                 <div class="picked-color-list" id="picked-colors-list"></div>
                 <p class="scene-empty" id="picked-colors-empty">No picked splat colors.</p>
+              </div>
+            </section>
+
+            <section class="inspector-panel" id="inspector-light" data-inspector-panel="light" role="tabpanel" hidden>
+              <div class="field-stack">
+                <div class="section-heading section-heading-sub">
+                  <p class="section-label">Light</p>
+                  <h2>Point Lights</h2>
+                </div>
+                <div class="button-stack">
+                  <button class="toolbar-button" type="button" id="add-point-light-button" title="Add a new point light to the scene.">Add Point Light</button>
+                </div>
+                <div class="scene-list" id="light-list"></div>
+                <p class="scene-empty" id="light-empty">No point lights in the scene.</p>
+              </div>
+
+              <div class="field-stack" id="light-controls-section">
+                <div class="section-heading section-heading-sub">
+                  <p class="section-label">Light</p>
+                  <h2>Selected Light</h2>
+                </div>
+                <p class="info-item-name" id="light-name">No light selected</p>
+                <div class="button-stack">
+                  <button class="toolbar-button" type="button" id="light-gizmo-button" title="Show or hide the move gizmo for the selected point light.">Move Gizmo Off</button>
+                </div>
+                <label class="field" title="Adjust point-light intensity. Values above the slider range can be typed directly.">
+                  <span>Intensity</span>
+                  <div class="field-inline">
+                    <input id="light-intensity-range" type="range" min="0" max="100" step="0.1" value="20">
+                    <input class="text-input short-input" id="light-intensity-input" type="text" inputmode="decimal" value="20.0">
+                  </div>
+                </label>
+                <div class="transform-row">
+                  <label class="field" title="Move the selected light along the X axis.">
+                    <span>X</span>
+                    <input class="text-input" id="light-x-input" type="text" inputmode="decimal" value="0">
+                  </label>
+                  <label class="field" title="Move the selected light along the Y axis.">
+                    <span>Y</span>
+                    <input class="text-input" id="light-y-input" type="text" inputmode="decimal" value="0">
+                  </label>
+                  <label class="field" title="Move the selected light along the Z axis.">
+                    <span>Z</span>
+                    <input class="text-input" id="light-z-input" type="text" inputmode="decimal" value="0">
+                  </label>
+                </div>
               </div>
             </section>
 
