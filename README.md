@@ -34,6 +34,7 @@ Open the page and load local splat files with `Open File` or drag-and-drop.
 ### Direct open
 
 Open `index.html`, then use `Open File` or drag a splat file into the viewer.
+If Chrome exits immediately on this machine, run `npm run open` to launch with browser-safe flags and automatic Edge fallback.
 
 ### Local dev server
 

@@ -26,6 +26,7 @@ function startSparkViewer() {
     const RENDER_FPS_LIMITS = { min: 1, max: 240 };
     const SCALE_LIMITS = { min: 0.001, max: 1000 };
     const LIGHT_INTENSITY_LIMITS = { min: 0, max: 100000 };
+    const LIGHT_HELPER_SCALE_LIMITS = { min: 0.1, max: 8 };
     const LIGHT_POSITION_LIMITS = { min: -100000, max: 100000 };
     const LIGHT_COLOR = "#ffd48a";
     const LIGHT_HELPER_COLOR = "#fff1b5";
@@ -115,6 +116,8 @@ function startSparkViewer() {
       lightControlsSection: document.getElementById("light-controls-section"),
       lightEmpty: document.getElementById("light-empty"),
       lightGizmoButton: document.getElementById("light-gizmo-button"),
+      lightHelperScaleInput: document.getElementById("light-helper-scale-input"),
+      lightHelperScaleRange: document.getElementById("light-helper-scale-range"),
       lightIntensityInput: document.getElementById("light-intensity-input"),
       lightIntensityRange: document.getElementById("light-intensity-range"),
       lightList: document.getElementById("light-list"),
@@ -1091,6 +1094,7 @@ function startSparkViewer() {
         this.pendingForcedFrames = 0;
         this.renderRequestHandle = 0;
         this.renderTimeoutHandle = 0;
+        this.animationLoopEnabled = false;
         this.lastRenderFrameAt = 0;
         this.activeRenderUntil = 0;
         this.postLoadRefreshHandle = 0;
@@ -1123,6 +1127,7 @@ function startSparkViewer() {
           gridScaleMode: "auto",
           gridScaleValue: 1,
           inspectorTab: "scene",
+          lightHelperScale: 1,
           lightIntensity: 20,
           lightX: 0,
           lightY: 0,
@@ -1363,6 +1368,12 @@ function startSparkViewer() {
           onChange: (value, options) => this.setSceneSelectionIndex(value, options),
         });
         this.bindNumberPair({
+          input: this.dom.lightHelperScaleInput,
+          range: this.dom.lightHelperScaleRange,
+          limits: LIGHT_HELPER_SCALE_LIMITS,
+          onChange: (value, options) => this.setSelectedLightHelperScale(value, options),
+        });
+        this.bindNumberPair({
           input: this.dom.lightIntensityInput,
           range: this.dom.lightIntensityRange,
           limits: LIGHT_INTENSITY_LIMITS,
@@ -1478,14 +1489,16 @@ function startSparkViewer() {
             return;
           }
           this.markRenderActivity(2200);
-          this.invalidateRender(false);
+          this.lastRenderFrameAt = 0;
+          this.invalidateRender(true);
         });
         this.transformControls.addEventListener("objectChange", () => {
           if (!this.state.showGizmo) {
             return;
           }
           this.applyTransformFromGizmo();
-          this.markRenderActivity(2200);
+          this.markRenderActivity(this.state.renderPolicy === "always" ? 60000 : 2200);
+          this.forceVisualRefresh(4);
         });
       }
 
@@ -1509,6 +1522,9 @@ function startSparkViewer() {
         );
         if (this.state.renderPolicy === "active") {
           this.scheduleRender(this.getRenderFrameDelay());
+        } else {
+          this.ensureAlwaysAnimationLoop();
+          this.lastRenderFrameAt = 0;
         }
       }
 
@@ -1606,6 +1622,7 @@ function startSparkViewer() {
         this.lightSceneRoot.add(root);
         return {
           id: `scene-light-${++this.sceneLightSerial}`,
+          helperScale: 1,
           intensity: 20,
           name: `Point Light ${this.sceneLightSerial}`,
           root,
@@ -1713,12 +1730,20 @@ function startSparkViewer() {
 
       syncSelectedLightControls(syncInputs = true) {
         const light = this.getSelectedLight();
+        this.state.lightHelperScale = light?.helperScale ?? 1;
         this.state.lightIntensity = light?.intensity ?? 20;
         this.state.lightX = light?.position?.x ?? 0;
         this.state.lightY = light?.position?.y ?? 0;
         this.state.lightZ = light?.position?.z ?? 0;
         if (this.dom.lightName) {
           this.dom.lightName.textContent = light?.name ?? "No light selected";
+        }
+        if (this.dom.lightHelperScaleRange) {
+          this.dom.lightHelperScaleRange.value = String(clampNumber(this.state.lightHelperScale, LIGHT_HELPER_SCALE_LIMITS));
+          this.dom.lightHelperScaleRange.disabled = !light;
+        }
+        if (syncInputs && this.dom.lightHelperScaleInput) {
+          this.dom.lightHelperScaleInput.value = formatNumber(this.state.lightHelperScale, 2);
         }
         if (this.dom.lightIntensityRange) {
           this.dom.lightIntensityRange.value = String(Math.min(clampNumber(this.state.lightIntensity, LIGHT_INTENSITY_LIMITS), 100));
@@ -1727,7 +1752,7 @@ function startSparkViewer() {
         if (syncInputs && this.dom.lightIntensityInput) {
           this.dom.lightIntensityInput.value = this.state.lightIntensity.toFixed(this.state.lightIntensity < 10 ? 2 : 1);
         }
-        [this.dom.lightIntensityInput, this.dom.lightXInput, this.dom.lightYInput, this.dom.lightZInput].forEach((input) => {
+        [this.dom.lightHelperScaleInput, this.dom.lightIntensityInput, this.dom.lightXInput, this.dom.lightYInput, this.dom.lightZInput].forEach((input) => {
           if (input) {
             input.disabled = !light;
           }
@@ -1768,12 +1793,16 @@ function startSparkViewer() {
         light.root.visible = light.visible;
         const bulb = light.root.children[1];
         const halo = light.root.children[0];
+        const helperScale = clampNumber(light.helperScale ?? 1, LIGHT_HELPER_SCALE_LIMITS);
         if (bulb?.material?.color) {
           bulb.material.color.set(LIGHT_COLOR);
         }
+        if (bulb) {
+          bulb.scale.setScalar(helperScale);
+        }
         if (halo) {
           const haloScale = THREE.MathUtils.clamp(0.8 + Math.log10(Math.max(light.intensity, 1) + 1) * 0.32, 0.8, 2.5);
-          halo.scale.setScalar(haloScale);
+          halo.scale.setScalar(haloScale * helperScale);
         }
       }
 
@@ -1925,7 +1954,8 @@ function startSparkViewer() {
           this.state.lightZ = light.position.z;
           this.syncSelectedLightControls(true);
           this.refreshLightingModel();
-          this.forceVisualRefresh(3);
+          this.lastRenderFrameAt = 0;
+          this.forceVisualRefresh(4);
           return;
         }
         const item = this.getSelectedItem();
@@ -2316,6 +2346,35 @@ function startSparkViewer() {
         }
       }
 
+      applySelectedLightHelperScale(updateStatus = true, syncInput = true) {
+        const light = this.getSelectedLight();
+        const helperScale = clampNumber(this.state.lightHelperScale, LIGHT_HELPER_SCALE_LIMITS);
+        this.state.lightHelperScale = helperScale;
+        if (this.dom.lightHelperScaleRange) {
+          this.dom.lightHelperScaleRange.value = String(helperScale);
+        }
+        if (syncInput && this.dom.lightHelperScaleInput) {
+          this.dom.lightHelperScaleInput.value = formatNumber(helperScale, 2);
+        }
+        if (!light) {
+          return;
+        }
+        light.helperScale = helperScale;
+        this.updateLightVisual(light);
+        this.invalidateRender();
+        if (updateStatus) {
+          this.updateStatus(`${light.name} helper size updated`);
+        }
+      }
+
+      setSelectedLightHelperScale(value, { commit = true, syncInput = true } = {}) {
+        this.state.lightHelperScale = commit ? clampNumber(value, LIGHT_HELPER_SCALE_LIMITS) : Number(value);
+        if (!Number.isFinite(this.state.lightHelperScale)) {
+          return;
+        }
+        this.applySelectedLightHelperScale(true, syncInput);
+      }
+
       setSelectedLightIntensity(value, { commit = true, syncInput = true } = {}) {
         this.state.lightIntensity = commit ? clampNumber(value, LIGHT_INTENSITY_LIMITS) : Number(value);
         this.applySelectedLightIntensity(true, syncInput);
@@ -2343,6 +2402,8 @@ function startSparkViewer() {
           }
           this.syncLightList();
           this.refreshLightingModel();
+          this.lastRenderFrameAt = 0;
+          this.forceVisualRefresh(4);
         }
         if (commit) {
           this.syncSelectedLightControls(true);
@@ -2425,7 +2486,11 @@ function startSparkViewer() {
           this.updateHoverReadout();
         }
         this.renderPickedColors();
+        if (this.state.renderPolicy === "always") {
+          this.lastRenderFrameAt = 0;
+        }
         this.invalidateRender();
+        this.forceVisualRefresh(2);
       }
 
       getSceneExposureScale() {
@@ -3376,7 +3441,12 @@ function startSparkViewer() {
           this.dom.renderPolicySelect.value = policy;
         }
         if (policy === "active") {
+          this.disableAlwaysAnimationLoop();
           this.markRenderActivity();
+        } else {
+          this.ensureAlwaysAnimationLoop();
+          this.lastRenderFrameAt = 0;
+          this.renderInvalidated = true;
         }
         if (updateChip) {
           this.updateRenderChip(policy === "always" ? "Render loop always" : "Render loop active");
@@ -4480,6 +4550,7 @@ function startSparkViewer() {
       renderLoop() {
         const frameStartedAt = performance.now();
         const delta = Math.min(this.clock.getDelta(), 0.05);
+        const alwaysRender = this.state.renderPolicy === "always";
         let keepAnimating = false;
         const movedByKeys = Boolean(this.firstPerson.update(delta));
         if (movedByKeys && this.activeMode === "orbit") {
@@ -4502,11 +4573,12 @@ function startSparkViewer() {
           || this.pendingForcedFrames > 0
           || timedRenderActive;
         const frameDelay = this.getRenderFrameDelay(frameStartedAt);
-        if (shouldDraw && timedRenderActive && !this.renderInvalidated && frameDelay > 1) {
-          this.scheduleRender(frameDelay);
-          return;
-        }
-        if (shouldDraw) {
+        const canDrawNow = alwaysRender
+          || frameDelay <= 1
+          || this.renderInvalidated
+          || keepAnimating
+          || this.pendingForcedFrames > 0;
+        if (shouldDraw && canDrawNow) {
           this.renderer.setRenderTarget(null);
           this.renderer.render(this.scene, this.camera);
           this.updateFps();
@@ -4517,7 +4589,7 @@ function startSparkViewer() {
             this.pendingForcedFrames -= 1;
           }
         }
-        if (this.isTimedRenderActive() || keepAnimating || this.renderInvalidated || this.pendingForcedFrames > 0) {
+        if (!alwaysRender && (this.isTimedRenderActive() || keepAnimating || this.renderInvalidated || this.pendingForcedFrames > 0)) {
           this.scheduleRender(this.getRenderFrameDelay());
         }
       }
@@ -4683,14 +4755,24 @@ function startSparkViewer() {
       }
 
       scheduleRender(delayMs = 0) {
-        if (this.renderRequestHandle || this.renderTimeoutHandle) {
+        if (this.state.renderPolicy === "always" && this.animationLoopEnabled) {
           return;
         }
         if (delayMs > 0) {
+          if (this.renderRequestHandle || this.renderTimeoutHandle) {
+            return;
+          }
           this.renderTimeoutHandle = window.setTimeout(() => {
             this.renderTimeoutHandle = 0;
             this.scheduleRender(0);
           }, delayMs);
+          return;
+        }
+        if (this.renderTimeoutHandle) {
+          window.clearTimeout(this.renderTimeoutHandle);
+          this.renderTimeoutHandle = 0;
+        }
+        if (this.renderRequestHandle) {
           return;
         }
         this.renderRequestHandle = window.requestAnimationFrame(() => {
@@ -4724,12 +4806,39 @@ function startSparkViewer() {
 
       invalidateRender(immediate = true) {
         this.renderInvalidated = true;
+        if (this.state.renderPolicy === "always") {
+          this.ensureAlwaysAnimationLoop();
+        }
         if (immediate && this.renderTimeoutHandle) {
           window.clearTimeout(this.renderTimeoutHandle);
           this.renderTimeoutHandle = 0;
         }
         this.markRenderActivity();
         this.scheduleRender(immediate ? 0 : this.idleRenderDelayMs);
+      }
+
+      ensureAlwaysAnimationLoop() {
+        if (this.animationLoopEnabled) {
+          return;
+        }
+        if (this.renderTimeoutHandle) {
+          window.clearTimeout(this.renderTimeoutHandle);
+          this.renderTimeoutHandle = 0;
+        }
+        if (this.renderRequestHandle) {
+          window.cancelAnimationFrame(this.renderRequestHandle);
+          this.renderRequestHandle = 0;
+        }
+        this.animationLoopEnabled = true;
+        this.renderer.setAnimationLoop(() => this.renderLoop());
+      }
+
+      disableAlwaysAnimationLoop() {
+        if (!this.animationLoopEnabled) {
+          return;
+        }
+        this.animationLoopEnabled = false;
+        this.renderer.setAnimationLoop(null);
       }
 
       captureCurrentPoseAsDefault() {

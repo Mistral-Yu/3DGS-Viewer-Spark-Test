@@ -3,6 +3,7 @@
     "https://raw.githubusercontent.com/colour-science/colour-nuke/master/colour_nuke/resources/images/ColorChecker2014/sRGB_ColorChecker2014.exr";
   const STANFORD_SCAN_REPOSITORY_URL = "https://graphics.stanford.edu/data/3Dscanrep/";
   const meshPrimitiveCache = new Map();
+  const meshPrimitiveDefinitionCache = new Map();
 
   const GOLDEN_ANGLE = Math.PI * (3 - Math.sqrt(5));
 
@@ -86,6 +87,9 @@
   };
 
   const createMeshPrimitive = ({ THREE, key, helpers }) => {
+    if (meshPrimitiveDefinitionCache.has(key)) {
+      return meshPrimitiveDefinitionCache.get(key);
+    }
     const meshData = decodeMeshPrimitive(key);
     const vertices = meshData.vertices;
     const faces = meshData.faces;
@@ -94,8 +98,13 @@
       bounds.expandByPoint(new THREE.Vector3(vertices[index], vertices[index + 1], vertices[index + 2]));
     }
     const centerOffset = bounds.getCenter(new THREE.Vector3());
-    const color = new THREE.Color(...meshData.color);
     const splats = [];
+    const vertexCount = vertices.length / 3;
+    const vertexPositions = Array.from({ length: vertexCount }, (_, index) => new THREE.Vector3(
+      vertices[index * 3],
+      vertices[(index * 3) + 1],
+      vertices[(index * 3) + 2],
+    ).sub(centerOffset));
     let minScale = Number.POSITIVE_INFINITY;
     let maxScale = 0;
     const v0 = new THREE.Vector3();
@@ -108,12 +117,12 @@
     const bitangent = new THREE.Vector3();
     const centroid = new THREE.Vector3();
     for (let faceIndex = 0; faceIndex < faces.length; faceIndex += 3) {
-      const i0 = faces[faceIndex] * 3;
-      const i1 = faces[faceIndex + 1] * 3;
-      const i2 = faces[faceIndex + 2] * 3;
-      v0.set(vertices[i0], vertices[i0 + 1], vertices[i0 + 2]).sub(centerOffset);
-      v1.set(vertices[i1], vertices[i1 + 1], vertices[i1 + 2]).sub(centerOffset);
-      v2.set(vertices[i2], vertices[i2 + 1], vertices[i2 + 2]).sub(centerOffset);
+      const a = faces[faceIndex];
+      const b = faces[faceIndex + 1];
+      const c = faces[faceIndex + 2];
+      v0.copy(vertexPositions[a]);
+      v1.copy(vertexPositions[b]);
+      v2.copy(vertexPositions[c]);
       edgeA.subVectors(v1, v0);
       edgeB.subVectors(v2, v0);
       normal.crossVectors(edgeA, edgeB);
@@ -153,18 +162,23 @@
       const scaleX = Math.max((tangentMax - tangentMin) * 0.78, 0.0008);
       const scaleY = Math.max((bitangentMax - bitangentMin) * 0.78, 0.0008);
       const scaleZ = Math.max(Math.sqrt(area2 * 0.5) * 0.08, 0.0004);
+      const normalColor = new THREE.Color(
+        (normal.x * 0.5) + 0.5,
+        (normal.y * 0.5) + 0.5,
+        (normal.z * 0.5) + 0.5,
+      );
       minScale = Math.min(minScale, scaleX, scaleY, scaleZ);
       maxScale = Math.max(maxScale, scaleX, scaleY, scaleZ);
       splats.push({
-        alpha: 0.96,
-        color: color.clone(),
+        alpha: 1,
+        color: normalColor,
         normal: normal.clone(),
         position: centroid.clone(),
         quaternion: createQuaternionFromFrame(THREE, tangent, bitangent, normal),
         scale: new THREE.Vector3(scaleX, scaleY, scaleZ),
       });
     }
-    return {
+    const definition = {
       compression: "Official mesh converted to runtime splats",
       compressionRatio: "-",
       defaultSettings: {
@@ -181,6 +195,8 @@
       source: `Generated from official Stanford mesh archive: ${meshData.sourceUrl}`,
       splats,
     };
+    meshPrimitiveDefinitionCache.set(key, definition);
+    return definition;
   };
 
   const pushEllipsoidSplats = ({
