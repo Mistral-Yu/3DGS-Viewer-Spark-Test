@@ -10,6 +10,7 @@
   >
   <link rel="icon" href="./favicon.svg" type="image/svg+xml">
   <link rel="stylesheet" href="./viewer.css">
+  <script src="./primitives/mesh-primitive-data.js"></script>
   <script src="./primitives/primitive-library.js"></script>
   <script src="./viewer.bundle.js" defer></script>
 </head>
@@ -73,6 +74,19 @@
               <span>Move Speed</span>
               <input class="text-input short-input" id="move-speed-input" type="text" inputmode="decimal" value="1.00">
             </label>
+
+            <label class="field" title="Choose whether the 3D viewport renders continuously or only for a short active window after page input.">
+              <span>Render Loop</span>
+              <select id="render-policy-select">
+                <option value="active" selected>Active</option>
+                <option value="always">Always</option>
+              </select>
+            </label>
+
+            <label class="field" title="Limit the active or always render loop frame rate.">
+              <span>Frame Rate</span>
+              <input class="text-input short-input" id="render-fps-input" type="text" inputmode="decimal" value="60">
+            </label>
           </div>
         </section>
 
@@ -96,6 +110,8 @@
                 <option value="sphere" selected>Sphere</option>
                 <option value="cube">Cube</option>
                 <option value="macbeth">Macbeth</option>
+                <option value="bunny">Bunny</option>
+                <option value="dragon">dragon</option>
               </select>
             </label>
             <button class="toolbar-button" type="button" id="add-primitive-button" title="Add the selected primitive as a new splat item in the scene.">Add Primitive</button>
@@ -159,7 +175,7 @@
           <div class="section-heading">
             <p class="section-label">Inspector</p>
             <div class="section-title-row">
-              <h2>Scene / Color / Light / Info / Export</h2>
+              <h2>Splats / Color / Light / Info / Export</h2>
               <span
                 class="hint-badge"
                 title="Switch tabs to manage scene items, apply color grading, inspect metadata, or export splats."
@@ -168,7 +184,7 @@
             </div>
           </div>
           <div class="inspector-tabs" role="tablist" aria-label="Inspector tabs">
-            <button class="segmented-button is-active" type="button" id="tab-scene-button" data-inspector-tab="scene" role="tab" aria-selected="true" title="Scene item visibility, selection, transforms, and splat rendering controls.">Scene</button>
+            <button class="segmented-button is-active" type="button" id="tab-scene-button" data-inspector-tab="scene" role="tab" aria-selected="true" title="Splat item visibility, selection, transforms, and render controls.">Splats</button>
             <button class="segmented-button" type="button" id="tab-color-button" data-inspector-tab="color" role="tab" aria-selected="false" title="Linear color grading controls.">Color</button>
             <button class="segmented-button" type="button" id="tab-light-button" data-inspector-tab="light" role="tab" aria-selected="false" title="Manage point lights that relight visible splats in beauty mode.">Light</button>
             <button class="segmented-button" type="button" id="tab-info-button" data-inspector-tab="info" role="tab" aria-selected="false" title="Loaded splat metadata and load progress.">Info</button>
@@ -179,7 +195,7 @@
             <section class="inspector-panel is-active" id="inspector-scene" data-inspector-panel="scene" role="tabpanel">
               <div class="field-stack">
                 <div class="section-heading section-heading-sub">
-                  <p class="section-label">Scene</p>
+                  <p class="section-label">Splats</p>
                   <h2>Items</h2>
                 </div>
                 <div class="scene-controls-row">
@@ -191,7 +207,7 @@
                     </div>
                   </label>
                   <label class="field" title="Pick the selected splat item from the whole scene list, even if it is outside the current scroll position.">
-                    <span>Scene Select</span>
+                    <span>Splat Select</span>
                     <div class="field-inline">
                       <input id="scene-select-range" type="range" min="1" max="1" step="1" value="1">
                       <input class="text-input short-input" id="scene-select-input" type="text" inputmode="numeric" value="1">
@@ -251,7 +267,7 @@
                   </div>
                 </label>
 
-                <label class="field" title="Adjust the Gaussian falloff amount used by the renderer. Values above the slider range can be typed directly.">
+                <label class="field" title="Adjust Spark renderer Gaussian falloff. Spark exposes this as a renderer-wide setting. Values above the slider range can be typed directly.">
                   <span>Falloff</span>
                   <div class="field-inline">
                     <input id="falloff-range" type="range" min="0" max="8" step="0.05" value="1">
@@ -511,6 +527,18 @@
                   <h2>Format</h2>
                 </div>
                 <p class="progress-label">Current export format: normal binary PLY.</p>
+                <label class="field" title="Apply the selected splat opacity to exported alpha values.">
+                  <span>Opacity</span>
+                  <input id="export-opacity-checkbox" type="checkbox" checked>
+                </label>
+                <label class="field" title="Write the selected splat falloff value as a PLY comment. Gaussian PLY has no standard falloff property.">
+                  <span>Falloff</span>
+                  <input id="export-falloff-checkbox" type="checkbox" checked>
+                </label>
+                <label class="field" title="Write active and loaded SH levels as PLY comments. Exported colors remain SH0-compatible f_dc values.">
+                  <span>SH</span>
+                  <input id="export-sh-checkbox" type="checkbox" checked>
+                </label>
               </div>
 
               <div class="field-stack">

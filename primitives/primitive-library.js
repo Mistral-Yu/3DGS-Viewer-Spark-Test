@@ -1,6 +1,10 @@
 (function () {
   const MACBETH_EXR_SOURCE_URL =
     "https://raw.githubusercontent.com/colour-science/colour-nuke/master/colour_nuke/resources/images/ColorChecker2014/sRGB_ColorChecker2014.exr";
+  const STANFORD_SCAN_REPOSITORY_URL = "https://graphics.stanford.edu/data/3Dscanrep/";
+  const meshPrimitiveCache = new Map();
+
+  const GOLDEN_ANGLE = Math.PI * (3 - Math.sqrt(5));
 
   const MACBETH_LINEAR_SRGB = [
     { name: "Dark Skin", linear: [0.173795, 0.078826, 0.053278] },
@@ -28,6 +32,241 @@
     { name: "Neutral 3.5", linear: [0.085938, 0.088851, 0.089840] },
     { name: "Black 2", linear: [0.031296, 0.031433, 0.032268] },
   ];
+
+  const makeBoundsFromSplats = (THREE, splats) => {
+    const bounds = new THREE.Box3();
+    let padding = 0.01;
+    splats.forEach((splat) => {
+      bounds.expandByPoint(splat.position);
+      padding = Math.max(padding, splat.scale.x, splat.scale.y, splat.scale.z);
+    });
+    return bounds.expandByScalar(padding);
+  };
+
+  const fibonacciDirection = (index, count) => {
+    const y = 1 - ((index + 0.5) / count) * 2;
+    const radial = Math.sqrt(Math.max(1 - (y * y), 0));
+    const phi = index * GOLDEN_ANGLE;
+    return { x: Math.cos(phi) * radial, y, z: Math.sin(phi) * radial };
+  };
+
+  const decodeBase64 = (base64) => {
+    const binary = atob(base64);
+    const bytes = new Uint8Array(binary.length);
+    for (let index = 0; index < binary.length; index += 1) {
+      bytes[index] = binary.charCodeAt(index);
+    }
+    return bytes.buffer;
+  };
+
+  const decodeMeshPrimitive = (key) => {
+    if (meshPrimitiveCache.has(key)) {
+      return meshPrimitiveCache.get(key);
+    }
+    const entry = window.MeshPrimitiveData?.[key];
+    if (!entry) {
+      throw new Error(`Missing mesh primitive data for ${key}`);
+    }
+    const decoded = {
+      ...entry,
+      faces: new Uint16Array(decodeBase64(entry.facesBase64)),
+      vertices: new Float32Array(decodeBase64(entry.verticesBase64)),
+    };
+    meshPrimitiveCache.set(key, decoded);
+    return decoded;
+  };
+
+  const createQuaternionFromFrame = (THREE, tangent, bitangent, normal) => {
+    const basis = new THREE.Matrix4().makeBasis(
+      tangent.clone().normalize(),
+      bitangent.clone().normalize(),
+      normal.clone().normalize(),
+    );
+    return new THREE.Quaternion().setFromRotationMatrix(basis).normalize();
+  };
+
+  const createMeshPrimitive = ({ THREE, key, helpers }) => {
+    const meshData = decodeMeshPrimitive(key);
+    const vertices = meshData.vertices;
+    const faces = meshData.faces;
+    const bounds = new THREE.Box3();
+    for (let index = 0; index < vertices.length; index += 3) {
+      bounds.expandByPoint(new THREE.Vector3(vertices[index], vertices[index + 1], vertices[index + 2]));
+    }
+    const centerOffset = bounds.getCenter(new THREE.Vector3());
+    const color = new THREE.Color(...meshData.color);
+    const splats = [];
+    let minScale = Number.POSITIVE_INFINITY;
+    let maxScale = 0;
+    const v0 = new THREE.Vector3();
+    const v1 = new THREE.Vector3();
+    const v2 = new THREE.Vector3();
+    const edgeA = new THREE.Vector3();
+    const edgeB = new THREE.Vector3();
+    const normal = new THREE.Vector3();
+    const tangent = new THREE.Vector3();
+    const bitangent = new THREE.Vector3();
+    const centroid = new THREE.Vector3();
+    for (let faceIndex = 0; faceIndex < faces.length; faceIndex += 3) {
+      const i0 = faces[faceIndex] * 3;
+      const i1 = faces[faceIndex + 1] * 3;
+      const i2 = faces[faceIndex + 2] * 3;
+      v0.set(vertices[i0], vertices[i0 + 1], vertices[i0 + 2]).sub(centerOffset);
+      v1.set(vertices[i1], vertices[i1 + 1], vertices[i1 + 2]).sub(centerOffset);
+      v2.set(vertices[i2], vertices[i2 + 1], vertices[i2 + 2]).sub(centerOffset);
+      edgeA.subVectors(v1, v0);
+      edgeB.subVectors(v2, v0);
+      normal.crossVectors(edgeA, edgeB);
+      const area2 = normal.length();
+      if (area2 < 1e-9) {
+        continue;
+      }
+      normal.normalize();
+      tangent.copy(edgeA);
+      if (tangent.lengthSq() < 1e-9) {
+        tangent.subVectors(v2, v0);
+      }
+      tangent.projectOnPlane(normal).normalize();
+      if (tangent.lengthSq() < 1e-9) {
+        tangent.set(Math.abs(normal.y) < 0.95 ? 0 : 1, Math.abs(normal.y) < 0.95 ? 1 : 0, 0);
+        tangent.projectOnPlane(normal).normalize();
+      }
+      if (tangent.lengthSq() < 1e-9) {
+        tangent.set(1, 0, 0);
+      }
+      bitangent.crossVectors(normal, tangent).normalize();
+      centroid.copy(v0).add(v1).add(v2).multiplyScalar(1 / 3);
+
+      let tangentMin = Number.POSITIVE_INFINITY;
+      let tangentMax = Number.NEGATIVE_INFINITY;
+      let bitangentMin = Number.POSITIVE_INFINITY;
+      let bitangentMax = Number.NEGATIVE_INFINITY;
+      [v0, v1, v2].forEach((vertex) => {
+        const delta = vertex.clone().sub(centroid);
+        const tangentDot = delta.dot(tangent);
+        const bitangentDot = delta.dot(bitangent);
+        tangentMin = Math.min(tangentMin, tangentDot);
+        tangentMax = Math.max(tangentMax, tangentDot);
+        bitangentMin = Math.min(bitangentMin, bitangentDot);
+        bitangentMax = Math.max(bitangentMax, bitangentDot);
+      });
+      const scaleX = Math.max((tangentMax - tangentMin) * 0.78, 0.0008);
+      const scaleY = Math.max((bitangentMax - bitangentMin) * 0.78, 0.0008);
+      const scaleZ = Math.max(Math.sqrt(area2 * 0.5) * 0.08, 0.0004);
+      minScale = Math.min(minScale, scaleX, scaleY, scaleZ);
+      maxScale = Math.max(maxScale, scaleX, scaleY, scaleZ);
+      splats.push({
+        alpha: 0.96,
+        color: color.clone(),
+        normal: normal.clone(),
+        position: centroid.clone(),
+        quaternion: createQuaternionFromFrame(THREE, tangent, bitangent, normal),
+        scale: new THREE.Vector3(scaleX, scaleY, scaleZ),
+      });
+    }
+    return {
+      compression: "Official mesh converted to runtime splats",
+      compressionRatio: "-",
+      defaultSettings: {
+        falloff: 1,
+        opacity: 1,
+      },
+      encoding: `Runtime-authored SH0 face splats from ${meshData.meshName}`,
+      format: "PLY",
+      localBounds: makeBoundsFromSplats(THREE, splats),
+      name: `Primitive ${meshData.label}`,
+      packedCapacity: "-",
+      scaleRange: helpers.formatScaleRange(minScale, maxScale),
+      shDegree: 0,
+      source: `Generated from official Stanford mesh archive: ${meshData.sourceUrl}`,
+      splats,
+    };
+  };
+
+  const pushEllipsoidSplats = ({
+    THREE,
+    alpha = 0.94,
+    center,
+    color,
+    count,
+    helpers,
+    radii,
+    rotation = new THREE.Quaternion(),
+    scaleMajor,
+    scaleMinor,
+    splats,
+  }) => {
+    const centerVector = center.clone ? center.clone() : new THREE.Vector3(...center);
+    const radiusVector = radii.clone ? radii.clone() : new THREE.Vector3(...radii);
+    const colorObject = color.clone ? color.clone() : new THREE.Color(...color);
+    const rotationQuat = rotation.clone ? rotation.clone() : new THREE.Quaternion();
+    const major = scaleMajor ?? (Math.max(radiusVector.x, radiusVector.y, radiusVector.z) / Math.sqrt(count) * 2.4);
+    const minor = scaleMinor ?? Math.max(major * 0.35, 0.01);
+    for (let index = 0; index < count; index += 1) {
+      const direction = fibonacciDirection(index, count);
+      const unitDirection = new THREE.Vector3(direction.x, direction.y, direction.z);
+      const offset = new THREE.Vector3(
+        unitDirection.x * radiusVector.x,
+        unitDirection.y * radiusVector.y,
+        unitDirection.z * radiusVector.z,
+      ).applyQuaternion(rotationQuat);
+      const normal = new THREE.Vector3(
+        unitDirection.x / Math.max(radiusVector.x, 0.0001),
+        unitDirection.y / Math.max(radiusVector.y, 0.0001),
+        unitDirection.z / Math.max(radiusVector.z, 0.0001),
+      ).normalize().applyQuaternion(rotationQuat).normalize();
+      splats.push({
+        alpha,
+        color: colorObject.clone(),
+        normal,
+        position: centerVector.clone().add(offset),
+        quaternion: helpers.createQuaternionFromNormal(normal),
+        scale: new THREE.Vector3(major, major, minor),
+      });
+    }
+  };
+
+  const pushTubeSplats = ({
+    THREE,
+    alpha = 0.93,
+    color,
+    helpers,
+    path,
+    radialSteps,
+    radiusAt,
+    segments,
+    splats,
+  }) => {
+    const colorObject = color.clone ? color.clone() : new THREE.Color(...color);
+    for (let segment = 0; segment < segments; segment += 1) {
+      const t = (segment + 0.5) / segments;
+      const center = path(t);
+      const prev = path(Math.max(t - 0.01, 0));
+      const next = path(Math.min(t + 0.01, 1));
+      const tangent = next.clone().sub(prev).normalize();
+      const reference = Math.abs(tangent.y) < 0.92
+        ? new THREE.Vector3(0, 1, 0)
+        : new THREE.Vector3(1, 0, 0);
+      const binormal = new THREE.Vector3().crossVectors(tangent, reference).normalize();
+      const normalAxis = new THREE.Vector3().crossVectors(binormal, tangent).normalize();
+      const radius = radiusAt(t);
+      for (let radial = 0; radial < radialSteps; radial += 1) {
+        const angle = (radial / radialSteps) * Math.PI * 2;
+        const normal = normalAxis.clone()
+          .multiplyScalar(Math.cos(angle))
+          .add(binormal.clone().multiplyScalar(Math.sin(angle)))
+          .normalize();
+        splats.push({
+          alpha,
+          color: colorObject.clone(),
+          normal,
+          position: center.clone().addScaledVector(normal, radius),
+          quaternion: helpers.createQuaternionFromNormal(normal),
+          scale: new THREE.Vector3(radius * 0.58, radius * 0.58, Math.max(radius * 0.15, 0.012)),
+        });
+      }
+    }
+  };
 
   const createSpherePrimitive = ({ THREE, helpers }) => {
     const radius = 1;
@@ -233,12 +472,19 @@
     if (kind === "macbeth") {
       return createMacbethPrimitive({ THREE, helpers });
     }
+    if (kind === "bunny") {
+      return createMeshPrimitive({ THREE, helpers, key: "bunny" });
+    }
+    if (kind === "dragon") {
+      return createMeshPrimitive({ THREE, helpers, key: "dragon" });
+    }
     return createSpherePrimitive({ THREE, helpers });
   };
 
   window.PrimitiveLibrary = {
     MACBETH_EXR_SOURCE_URL,
     MACBETH_LINEAR_SRGB,
+    STANFORD_SCAN_REPOSITORY_URL,
     createPrimitiveDefinition,
   };
 })();

@@ -56,10 +56,12 @@ Then open the local dev server URL shown in the terminal.
 
 - direct-open local workflow without a dev server
 - orbit and first-person camera controls
-- per-splat scene management with visibility, delete, export, and transform controls
+- splat management with visibility, delete, export, and transform controls
 - linear sRGB grading controls with sRGB display output
 - point-light management with inverse-square falloff
+- active or always-on render loop modes with a configurable frame-rate cap
 - Windows display-scale compensation for the app UI
+- procedural primitive splats, including mesh-derived `Bunny` and `dragon`
 
 ## Notes
 
@@ -68,3 +70,5 @@ Then open the local dev server URL shown in the terminal.
 - If you want a public sample, add a small model separately instead of committing the full local dataset.
 - Third-party license notes are listed in `THIRD_PARTY_NOTICES.md`.
 - Point lights relight splats only in `Beauty` mode. Diagnostic modes remain unlit on purpose.
+- Spark exposes Gaussian falloff as a renderer-wide setting, so the UI restores functional falloff through `SparkRenderer.falloff`.
+- `Bunny` and `dragon` are generated from official Stanford 3D Scanning Repository mesh files (`bun_zipper_res2.ply` and `dragon_vrip_res3.ply`) converted into runtime splats. The repository asks users to acknowledge Stanford Computer Graphics Laboratory and allows research/free redistribution while restricting commercial use without permission: https://graphics.stanford.edu/data/3Dscanrep/

@@ -29,6 +29,16 @@ The bundled files include MIT license headers.
 
 This repository redistributes the bundled Spark runtime as part of the viewer build.
 
+### Stanford 3D Scanning Repository names
+
+- Referenced names:
+  - Bunny
+  - dragon
+- Upstream:
+  - https://graphics.stanford.edu/data/3Dscanrep/
+- License / usage note:
+  - The viewer's `Bunny` and `dragon` primitives are generated from official Stanford repository mesh files and converted into runtime splats. If you use the original Stanford repository data, acknowledge Stanford Computer Graphics Laboratory, keep free redistribution and research-use terms in mind, and obtain permission for commercial use as described by the repository page.
+
 ## Project license
 
 The project's own source files are licensed under the repository `LICENSE` file unless noted otherwise.

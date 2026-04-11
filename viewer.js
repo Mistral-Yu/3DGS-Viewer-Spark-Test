@@ -23,6 +23,7 @@ function startSparkViewer() {
     const FALLOFF_LIMITS = { min: 0, max: 8 };
     const EXPOSURE_LIMITS = { min: -6, max: 6 };
     const POSITION_RANGE_LIMITS = { min: 0.05, max: 8 };
+    const RENDER_FPS_LIMITS = { min: 1, max: 240 };
     const SCALE_LIMITS = { min: 0.001, max: 1000 };
     const LIGHT_INTENSITY_LIMITS = { min: 0, max: 100000 };
     const LIGHT_POSITION_LIMITS = { min: -100000, max: 100000 };
@@ -75,7 +76,10 @@ function startSparkViewer() {
       exportDisableAllButton: document.getElementById("export-disable-all-button"),
       exportEmpty: document.getElementById("export-empty"),
       exportEnableAllButton: document.getElementById("export-enable-all-button"),
+      exportFalloffCheckbox: document.getElementById("export-falloff-checkbox"),
       exportList: document.getElementById("export-list"),
+      exportOpacityCheckbox: document.getElementById("export-opacity-checkbox"),
+      exportShCheckbox: document.getElementById("export-sh-checkbox"),
       falloffInput: document.getElementById("falloff-input"),
       falloffRange: document.getElementById("falloff-range"),
       fileInput: document.getElementById("file-input"),
@@ -137,6 +141,8 @@ function startSparkViewer() {
       progressTrack: document.getElementById("progress-track"),
       qualitySelect: document.getElementById("quality-select"),
       renderModeSelect: document.getElementById("render-mode-select"),
+      renderFpsInput: document.getElementById("render-fps-input"),
+      renderPolicySelect: document.getElementById("render-policy-select"),
       resetRotationButton: document.getElementById("reset-rotation-button"),
       resetViewButton: document.getElementById("reset-view-button"),
       saveSceneSplatsButton: document.getElementById("save-scene-splats-button"),
@@ -585,10 +591,22 @@ function startSparkViewer() {
       return quaternion;
     };
 
-    const packGaussianPly = (splats) => {
+    const sanitizePlyComment = (value) =>
+      String(value ?? "")
+        .replace(/[\r\n]+/g, " ")
+        .replace(/[^\x20-\x7e]/g, "?")
+        .trim()
+        .slice(0, 240);
+
+    const packGaussianPly = (splats, comments = []) => {
+      const commentLines = comments
+        .map(sanitizePlyComment)
+        .filter(Boolean)
+        .map((comment) => `comment ${comment}`);
       const header = [
         "ply",
         "format binary_little_endian 1.0",
+        ...commentLines,
         `element vertex ${splats.length}`,
         "property float x",
         "property float y",
@@ -1073,6 +1091,8 @@ function startSparkViewer() {
         this.pendingForcedFrames = 0;
         this.renderRequestHandle = 0;
         this.renderTimeoutHandle = 0;
+        this.lastRenderFrameAt = 0;
+        this.activeRenderUntil = 0;
         this.postLoadRefreshHandle = 0;
         this.idleRenderDelayMs = 160;
         this.depthRangeLimits = { min: 0.1, max: 100 };
@@ -1094,6 +1114,9 @@ function startSparkViewer() {
           autoRotate: false,
           background: "graphite",
           depthRange: DEPTH_RANGE_DEFAULT,
+          exportFalloff: true,
+          exportOpacity: true,
+          exportSh: true,
           exposure: 0,
           falloff: 1,
           focalLength: 14,
@@ -1108,7 +1131,9 @@ function startSparkViewer() {
           opacity: 1,
           positionRangeScale: 1,
           quality: "balanced",
+          renderFps: 60,
           renderMode: "beauty",
+          renderPolicy: "active",
           rotationX: 0,
           rotationY: 0,
           rotationZ: 0,
@@ -1144,6 +1169,8 @@ function startSparkViewer() {
         this.applyExposure(false);
         this.applyFocalLength(false, false);
         this.applyMoveSpeed(false);
+        this.applyRenderPolicy(false);
+        this.applyRenderFps(false);
         this.applyDepthRange(false);
         this.applyPositionRange(false);
         this.syncTransformInputs();
@@ -1192,6 +1219,7 @@ function startSparkViewer() {
         this.renderer.domElement.addEventListener("pointermove", (event) => this.queueHoverProbe(event));
         this.renderer.domElement.addEventListener("pointerleave", () => this.clearHoverReadout());
         this.renderer.domElement.addEventListener("wheel", (event) => this.handleStageWheel(event), { passive: false });
+        this.installRenderActivityListeners();
         this.invalidateRender();
 
         if (this.isFileProtocol) {
@@ -1240,6 +1268,15 @@ function startSparkViewer() {
           range: this.dom.moveSpeedRange,
           limits: MOVE_SPEED_LIMITS,
           onChange: (value, options) => this.setMoveSpeedFactor(value, options),
+        });
+        this.dom.renderPolicySelect?.addEventListener("change", (event) => {
+          this.setRenderPolicy(event.target.value);
+        });
+        this.bindNumberPair({
+          input: this.dom.renderFpsInput,
+          range: null,
+          limits: RENDER_FPS_LIMITS,
+          onChange: (value, options) => this.setRenderFps(value, options),
         });
         this.bindNumberPair({
           input: this.dom.exposureInput,
@@ -1297,6 +1334,15 @@ function startSparkViewer() {
         });
         this.dom.exportEnableAllButton?.addEventListener("click", () => this.setAllExportEnabled(true));
         this.dom.exportDisableAllButton?.addEventListener("click", () => this.setAllExportEnabled(false));
+        [
+          [this.dom.exportOpacityCheckbox, "exportOpacity"],
+          [this.dom.exportFalloffCheckbox, "exportFalloff"],
+          [this.dom.exportShCheckbox, "exportSh"],
+        ].forEach(([checkbox, stateKey]) => {
+          checkbox?.addEventListener("change", () => {
+            this.state[stateKey] = Boolean(checkbox.checked);
+          });
+        });
 
         this.dom.modeButtons.forEach((button) => {
           button.addEventListener("click", () => this.setMode(button.dataset.mode || "orbit"));
@@ -1424,12 +1470,22 @@ function startSparkViewer() {
           this.orbitControls.enabled = this.activeMode === "orbit" && !event.value;
           this.firstPerson.setPointerEnabled(this.activeMode === "fps" && !event.value);
           this.firstPerson.setMovementEnabled(!event.value);
+          this.markRenderActivity(event.value ? 60000 : 2200);
+          this.forceVisualRefresh(event.value ? 3 : 2);
         });
         this.transformControls.addEventListener("change", () => {
           if (!this.state.showGizmo) {
             return;
           }
+          this.markRenderActivity(2200);
+          this.invalidateRender(false);
+        });
+        this.transformControls.addEventListener("objectChange", () => {
+          if (!this.state.showGizmo) {
+            return;
+          }
           this.applyTransformFromGizmo();
+          this.markRenderActivity(2200);
         });
       }
 
@@ -1437,6 +1493,46 @@ function startSparkViewer() {
         const dpr = Math.max(window.devicePixelRatio || 1, 1);
         const compensation = THREE.MathUtils.clamp(1 / dpr, 0.5, 1);
         document.documentElement.style.setProperty("--ui-scale", compensation.toFixed(4));
+      }
+
+      installRenderActivityListeners() {
+        const mark = () => this.markRenderActivity();
+        ["pointerdown", "pointermove", "keydown", "keyup", "wheel"].forEach((eventName) => {
+          window.addEventListener(eventName, mark, { passive: true });
+        });
+      }
+
+      markRenderActivity(durationMs = 1400) {
+        this.activeRenderUntil = Math.max(
+          this.activeRenderUntil,
+          performance.now() + Math.max(0, durationMs),
+        );
+        if (this.state.renderPolicy === "active") {
+          this.scheduleRender(this.getRenderFrameDelay());
+        }
+      }
+
+      isTimedRenderActive(now = performance.now()) {
+        if (this.state.renderPolicy === "always") {
+          return true;
+        }
+        return this.state.renderPolicy === "active" && now < this.activeRenderUntil;
+      }
+
+      getRenderFrameIntervalMs() {
+        const fps = THREE.MathUtils.clamp(
+          Number(this.state.renderFps) || 60,
+          RENDER_FPS_LIMITS.min,
+          RENDER_FPS_LIMITS.max,
+        );
+        return 1000 / fps;
+      }
+
+      getRenderFrameDelay(now = performance.now()) {
+        const elapsed = this.lastRenderFrameAt > 0
+          ? now - this.lastRenderFrameAt
+          : Number.POSITIVE_INFINITY;
+        return Math.max(0, this.getRenderFrameIntervalMs() - elapsed);
       }
 
       ensureDynoHandleArray(target, count, factory) {
@@ -1573,10 +1669,15 @@ function startSparkViewer() {
       syncSelectedSplatControls(syncInputs = true) {
         const item = this.getSelectedItem();
         this.state.selectedExposure = item?.settings?.exposure ?? 0;
-        this.state.falloff = item?.settings?.falloff ?? 1;
+        this.state.falloff = Number.isFinite(this.spark?.falloff)
+          ? this.spark.falloff
+          : item?.settings?.falloff ?? 1;
         this.state.opacity = item?.settings?.opacity ?? 1;
         this.state.renderMode = item?.settings?.renderMode ?? "beauty";
         this.state.shLevel = item?.settings?.shLevel ?? 3;
+        if (item) {
+          this.spark.falloff = this.state.falloff;
+        }
         if (this.dom.selectedExposureRange) {
           this.dom.selectedExposureRange.value = String(
             clampNumber(this.state.selectedExposure, EXPOSURE_LIMITS),
@@ -1817,7 +1918,8 @@ function startSparkViewer() {
       applyTransformFromGizmo() {
         const light = this.getSelectedLight();
         if (light?.root) {
-          light.position.copy(light.root.position);
+          light.root.updateMatrixWorld(true);
+          light.root.getWorldPosition(light.position);
           this.state.lightX = light.position.x;
           this.state.lightY = light.position.y;
           this.state.lightZ = light.position.z;
@@ -2144,9 +2246,8 @@ function startSparkViewer() {
 
       addPointLight() {
         const light = this.createLightRecord();
-        const anchor = this.sceneBoundsSphere?.center?.clone() ?? this.orbitControls.target.clone();
+        light.position.copy(this.camera.position);
         const radius = Math.max(this.sceneBoundsSphere?.radius ?? 1, 1);
-        light.position.copy(anchor.add(new THREE.Vector3(radius * 0.6, radius * 0.4 + 0.75, radius * 0.35)));
         light.intensity = Math.max(radius * radius * 4, 12);
         this.updateLightVisual(light);
         this.sceneLights.push(light);
@@ -2919,12 +3020,12 @@ function startSparkViewer() {
         if (syncInput) {
           this.dom.falloffInput.value = falloff.toFixed(2);
         }
+        this.spark.falloff = falloff;
         const item = this.getSelectedItem();
+        this.sceneItems.forEach((sceneItem) => {
+          sceneItem.settings.falloff = falloff;
+        });
         if (item) {
-          item.settings.falloff = falloff;
-          if (item.mesh) {
-            item.mesh.falloff = falloff;
-          }
           this.modelMeta = item.modelMeta;
         }
         if (updateChip) {
@@ -3011,7 +3112,36 @@ function startSparkViewer() {
         return vector.normalize();
       }
 
-      buildExportSplatsForItem(item) {
+      getExportOptions() {
+        this.state.exportOpacity = this.dom.exportOpacityCheckbox?.checked ?? this.state.exportOpacity;
+        this.state.exportFalloff = this.dom.exportFalloffCheckbox?.checked ?? this.state.exportFalloff;
+        this.state.exportSh = this.dom.exportShCheckbox?.checked ?? this.state.exportSh;
+        return {
+          falloff: Boolean(this.state.exportFalloff),
+          opacity: Boolean(this.state.exportOpacity),
+          sh: Boolean(this.state.exportSh),
+        };
+      }
+
+      getExportCommentsForItem(item, options) {
+        const comments = [
+          `gs360_export_item ${item.modelMeta?.name ?? item.id}`,
+          "gs360_export_color_space linear_srgb_values_srgb_display",
+        ];
+        if (options.opacity) {
+          comments.push(`gs360_export_opacity ${formatNumber(item.settings?.opacity ?? 1, 6)}`);
+        }
+        if (options.falloff) {
+          comments.push(`gs360_export_falloff ${formatNumber(item.settings?.falloff ?? this.spark?.falloff ?? 1, 6)}`);
+        }
+        if (options.sh) {
+          comments.push(`gs360_export_active_sh ${Math.round(item.settings?.shLevel ?? 0)}`);
+          comments.push(`gs360_export_loaded_sh ${Math.round(item.loadedShDegree ?? 0)}`);
+        }
+        return comments;
+      }
+
+      buildExportSplatsForItem(item, options = this.getExportOptions()) {
         if (!item?.mesh) {
           return [];
         }
@@ -3029,7 +3159,9 @@ function startSparkViewer() {
         const normalMatrix = new THREE.Matrix3().getNormalMatrix(worldMatrix);
         const exposureScale = 2 ** clampNumber(this.state.exposure, EXPOSURE_LIMITS)
           * 2 ** clampNumber(item.settings?.exposure ?? 0, EXPOSURE_LIMITS);
-        const opacityScale = clampNumber(item.settings?.opacity ?? 1, OPACITY_LIMITS);
+        const opacityScale = options.opacity
+          ? clampNumber(item.settings?.opacity ?? 1, OPACITY_LIMITS)
+          : 1;
         const exportSplats = [];
         for (let index = 0; index < count; index += 1) {
           const splat = this.getPackedSplatAt(item, index);
@@ -3079,14 +3211,15 @@ function startSparkViewer() {
         }
         const usedNames = new Set();
         const exportPayloads = [];
+        const exportOptions = this.getExportOptions();
         for (const [index, item] of exportItems.entries()) {
-          const exportSplats = this.buildExportSplatsForItem(item);
+          const exportSplats = this.buildExportSplatsForItem(item, exportOptions);
           if (!exportSplats.length) {
             continue;
           }
           const baseName = sanitizeDownloadName(item.modelMeta?.name ?? `scene-splat-${index + 1}`);
           exportPayloads.push({
-            buffer: packGaussianPly(exportSplats),
+            buffer: packGaussianPly(exportSplats, this.getExportCommentsForItem(item, exportOptions)),
             fileName: buildUniqueFileName(baseName, ".ply", usedNames),
           });
         }
@@ -3234,6 +3367,47 @@ function startSparkViewer() {
           this.updateRenderChip("Move speed updated");
         }
         this.invalidateRender(false);
+      }
+
+      applyRenderPolicy(updateChip = true) {
+        const policy = this.state.renderPolicy === "always" ? "always" : "active";
+        this.state.renderPolicy = policy;
+        if (this.dom.renderPolicySelect) {
+          this.dom.renderPolicySelect.value = policy;
+        }
+        if (policy === "active") {
+          this.markRenderActivity();
+        }
+        if (updateChip) {
+          this.updateRenderChip(policy === "always" ? "Render loop always" : "Render loop active");
+        }
+        this.invalidateRender(false);
+      }
+
+      setRenderPolicy(value) {
+        this.state.renderPolicy = value === "always" ? "always" : "active";
+        this.applyRenderPolicy(true);
+      }
+
+      applyRenderFps(updateChip = true, syncInput = true) {
+        const fps = clampNumber(this.state.renderFps, RENDER_FPS_LIMITS);
+        this.state.renderFps = fps;
+        if (syncInput && this.dom.renderFpsInput) {
+          this.dom.renderFpsInput.value = String(Math.round(fps));
+        }
+        if (updateChip) {
+          this.updateRenderChip(`Render ${Math.round(fps)} fps`);
+        }
+        this.markRenderActivity();
+        this.invalidateRender(false);
+      }
+
+      setRenderFps(value, { commit = true, syncInput = true } = {}) {
+        this.state.renderFps = commit ? clampNumber(value, RENDER_FPS_LIMITS) : Number(value);
+        if (!Number.isFinite(this.state.renderFps)) {
+          return;
+        }
+        this.applyRenderFps(true, syncInput);
       }
 
       setFocalLength(value, refreshClipping, { commit = true, syncInput = true } = {}) {
@@ -3847,7 +4021,6 @@ function startSparkViewer() {
         const center = centerBounds.getCenter(new THREE.Vector3());
         item.rotationPivot.position.set(0, 0, 0);
         mesh.position.copy(center.clone().multiplyScalar(-1));
-        mesh.falloff = item.settings.falloff;
         mesh.opacity = item.settings.opacity;
         item.rotationPivot.add(mesh);
         item.modelRoot.visible = item.visible;
@@ -4259,9 +4432,9 @@ function startSparkViewer() {
 
         const size = helperBounds.getSize(new THREE.Vector3());
         const radius = Math.max(helperSphere?.radius || 0.5, 0.5);
-        const originSpanX = Math.max(Math.abs(helperBounds.min.x), Math.abs(helperBounds.max.x), 0.5) * 2;
-        const originSpanZ = Math.max(Math.abs(helperBounds.min.z), Math.abs(helperBounds.max.z), 0.5) * 2;
-        const autoGridSize = Math.max(originSpanX, originSpanZ, size.x, size.z, 1) * 1.8;
+        const autoGridBounds = this.sceneItems[0]?.baseLocalBounds ?? helperBounds;
+        const autoGridSizeVector = autoGridBounds.getSize(new THREE.Vector3());
+        const autoGridSize = Math.max(autoGridSizeVector.x, autoGridSizeVector.z, 1) * 1.8;
         const gridSize = this.state.gridScaleMode === "auto"
           ? autoGridSize
           : Math.max(this.state.gridScaleValue, 0.01);
@@ -4305,6 +4478,7 @@ function startSparkViewer() {
       }
 
       renderLoop() {
+        const frameStartedAt = performance.now();
         const delta = Math.min(this.clock.getDelta(), 0.05);
         let keepAnimating = false;
         const movedByKeys = Boolean(this.firstPerson.update(delta));
@@ -4322,18 +4496,29 @@ function startSparkViewer() {
         }
         keepAnimating = keepAnimating || movedByKeys;
         this.syncVisibleSceneItemTransforms();
-        if (this.renderInvalidated || keepAnimating || this.pendingForcedFrames > 0) {
+        const timedRenderActive = this.isTimedRenderActive(frameStartedAt);
+        const shouldDraw = this.renderInvalidated
+          || keepAnimating
+          || this.pendingForcedFrames > 0
+          || timedRenderActive;
+        const frameDelay = this.getRenderFrameDelay(frameStartedAt);
+        if (shouldDraw && timedRenderActive && !this.renderInvalidated && frameDelay > 1) {
+          this.scheduleRender(frameDelay);
+          return;
+        }
+        if (shouldDraw) {
           this.renderer.setRenderTarget(null);
           this.renderer.render(this.scene, this.camera);
           this.updateFps();
           this.updateCameraUi();
+          this.lastRenderFrameAt = performance.now();
           this.renderInvalidated = false;
           if (this.pendingForcedFrames > 0) {
             this.pendingForcedFrames -= 1;
           }
         }
-        if (keepAnimating || this.renderInvalidated || this.pendingForcedFrames > 0) {
-          this.scheduleRender(0);
+        if (this.isTimedRenderActive() || keepAnimating || this.renderInvalidated || this.pendingForcedFrames > 0) {
+          this.scheduleRender(this.getRenderFrameDelay());
         }
       }
 
@@ -4543,6 +4728,7 @@ function startSparkViewer() {
           window.clearTimeout(this.renderTimeoutHandle);
           this.renderTimeoutHandle = 0;
         }
+        this.markRenderActivity();
         this.scheduleRender(immediate ? 0 : this.idleRenderDelayMs);
       }
 
@@ -4664,7 +4850,10 @@ function startSparkViewer() {
         const nextTab = ["scene", "color", "light", "info", "export"].includes(tab) ? tab : "scene";
         this.state.inspectorTab = nextTab;
         this.syncInspectorTabs();
-        this.updateRenderChip(`${nextTab[0].toUpperCase()}${nextTab.slice(1)} tab`);
+        const label = nextTab === "scene"
+          ? "Splats"
+          : `${nextTab[0].toUpperCase()}${nextTab.slice(1)}`;
+        this.updateRenderChip(`${label} tab`);
       }
 
       syncInspectorTabs() {
