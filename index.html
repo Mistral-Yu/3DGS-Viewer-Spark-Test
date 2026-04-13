@@ -75,15 +75,7 @@
               <input class="text-input short-input" id="move-speed-input" type="text" inputmode="decimal" value="1.00">
             </label>
 
-            <label class="field" title="Choose whether the 3D viewport renders continuously or only for a short active window after page input.">
-              <span>Render Loop</span>
-              <select id="render-policy-select">
-                <option value="active" selected>Active</option>
-                <option value="always">Always</option>
-              </select>
-            </label>
-
-            <label class="field" title="Limit the active or always render loop frame rate.">
+            <label class="field" title="Limit the temporary low-FPS preview used while non-exposure values are being adjusted. A final render is submitted when input ends.">
               <span>Frame Rate</span>
               <input class="text-input short-input" id="render-fps-input" type="text" inputmode="decimal" value="60">
             </label>

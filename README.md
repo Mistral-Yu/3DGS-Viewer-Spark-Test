@@ -60,7 +60,7 @@ Then open the local dev server URL shown in the terminal.
 - splat management with visibility, delete, export, and transform controls
 - linear sRGB grading controls with sRGB display output
 - point-light management with inverse-square falloff
-- active or always-on render loop modes with a configurable frame-rate cap
+- low-FPS preview during non-exposure edits followed by a final render when input ends
 - Windows display-scale compensation for the app UI
 - procedural primitive splats, including mesh-derived `Bunny` and `dragon`
 

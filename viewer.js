@@ -24,6 +24,9 @@ function startSparkViewer() {
     const EXPOSURE_LIMITS = { min: -6, max: 6 };
     const POSITION_RANGE_LIMITS = { min: 0.05, max: 8 };
     const RENDER_FPS_LIMITS = { min: 1, max: 240 };
+    const INTERACTION_PREVIEW_FPS = 12;
+    const INTERACTION_PREVIEW_MS = 180;
+    const INTERACTION_SETTLE_MS = 140;
     const SCALE_LIMITS = { min: 0.001, max: 1000 };
     const LIGHT_INTENSITY_LIMITS = { min: 0, max: 100000 };
     const LIGHT_HELPER_SCALE_LIMITS = { min: 0.1, max: 8 };
@@ -145,7 +148,6 @@ function startSparkViewer() {
       qualitySelect: document.getElementById("quality-select"),
       renderModeSelect: document.getElementById("render-mode-select"),
       renderFpsInput: document.getElementById("render-fps-input"),
-      renderPolicySelect: document.getElementById("render-policy-select"),
       resetRotationButton: document.getElementById("reset-rotation-button"),
       resetViewButton: document.getElementById("reset-view-button"),
       saveSceneSplatsButton: document.getElementById("save-scene-splats-button"),
@@ -1092,11 +1094,15 @@ function startSparkViewer() {
         this.lastFpsUpdate = performance.now();
         this.renderInvalidated = true;
         this.pendingForcedFrames = 0;
-        this.renderRequestHandle = 0;
-        this.renderTimeoutHandle = 0;
-        this.animationLoopEnabled = false;
+        this.animationLoopHandle = 0;
+        this.scheduledRenderAt = 0;
         this.lastRenderFrameAt = 0;
         this.activeRenderUntil = 0;
+        this.deferredPreviewHandle = 0;
+        this.interactionFinalizeHandle = 0;
+        this.sparkSceneDirty = false;
+        this.sparkSceneUpdateQueued = false;
+        this.sparkSceneUpdatePromise = null;
         this.postLoadRefreshHandle = 0;
         this.idleRenderDelayMs = 160;
         this.depthRangeLimits = { min: 0.1, max: 100 };
@@ -1138,7 +1144,6 @@ function startSparkViewer() {
           quality: "balanced",
           renderFps: 60,
           renderMode: "beauty",
-          renderPolicy: "active",
           rotationX: 0,
           rotationY: 0,
           rotationZ: 0,
@@ -1174,7 +1179,6 @@ function startSparkViewer() {
         this.applyExposure(false);
         this.applyFocalLength(false, false);
         this.applyMoveSpeed(false);
-        this.applyRenderPolicy(false);
         this.applyRenderFps(false);
         this.applyDepthRange(false);
         this.applyPositionRange(false);
@@ -1196,6 +1200,7 @@ function startSparkViewer() {
         this.updateTransformGizmoButtons();
         this.updateMetaUi();
         this.onResize();
+        this.startAnimationLoop();
         this.setProgress("Idle", 0);
         this.updateRenderChip("Idle");
         this.updateStatus("Viewer ready");
@@ -1273,9 +1278,6 @@ function startSparkViewer() {
           range: this.dom.moveSpeedRange,
           limits: MOVE_SPEED_LIMITS,
           onChange: (value, options) => this.setMoveSpeedFactor(value, options),
-        });
-        this.dom.renderPolicySelect?.addEventListener("change", (event) => {
-          this.setRenderPolicy(event.target.value);
         });
         this.bindNumberPair({
           input: this.dom.renderFpsInput,
@@ -1481,24 +1483,24 @@ function startSparkViewer() {
           this.orbitControls.enabled = this.activeMode === "orbit" && !event.value;
           this.firstPerson.setPointerEnabled(this.activeMode === "fps" && !event.value);
           this.firstPerson.setMovementEnabled(!event.value);
-          this.markRenderActivity(event.value ? 60000 : 2200);
-          this.forceVisualRefresh(event.value ? 3 : 2);
+          if (event.value) {
+            this.startDeferredInteraction();
+          } else {
+            this.finishDeferredInteraction();
+          }
         });
         this.transformControls.addEventListener("change", () => {
           if (!this.state.showGizmo) {
             return;
           }
-          this.markRenderActivity(2200);
-          this.lastRenderFrameAt = 0;
-          this.invalidateRender(true);
+          this.startDeferredInteraction();
         });
         this.transformControls.addEventListener("objectChange", () => {
           if (!this.state.showGizmo) {
             return;
           }
           this.applyTransformFromGizmo();
-          this.markRenderActivity(this.state.renderPolicy === "always" ? 60000 : 2200);
-          this.forceVisualRefresh(4);
+          this.startDeferredInteraction();
         });
       }
 
@@ -1515,24 +1517,63 @@ function startSparkViewer() {
         });
       }
 
+      startAnimationLoop() {
+        if (this.animationLoopHandle) {
+          return;
+        }
+        const tick = () => {
+          this.animationLoopHandle = window.requestAnimationFrame(tick);
+          this.renderLoop();
+        };
+        this.animationLoopHandle = window.requestAnimationFrame(tick);
+      }
+
       markRenderActivity(durationMs = 1400) {
         this.activeRenderUntil = Math.max(
           this.activeRenderUntil,
           performance.now() + Math.max(0, durationMs),
         );
-        if (this.state.renderPolicy === "active") {
-          this.scheduleRender(this.getRenderFrameDelay());
-        } else {
-          this.ensureAlwaysAnimationLoop();
-          this.lastRenderFrameAt = 0;
+        this.scheduleRender(this.getRenderFrameDelay());
+      }
+
+      queueSparkSceneUpdate() {
+        if (!this.spark || !this.scene || !this.camera) {
+          return Promise.resolve();
         }
+        this.sparkSceneDirty = true;
+        if (this.sparkSceneUpdatePromise) {
+          this.sparkSceneUpdateQueued = true;
+          return this.sparkSceneUpdatePromise;
+        }
+        const runUpdate = async () => {
+          while (this.sparkSceneDirty || this.sparkSceneUpdateQueued) {
+            this.sparkSceneDirty = false;
+            this.sparkSceneUpdateQueued = false;
+            this.syncLightingRuntimeState();
+            await this.spark.update({
+              scene: this.scene,
+              camera: this.camera,
+            });
+            this.pendingForcedFrames = Math.max(this.pendingForcedFrames, 1);
+            this.renderInvalidated = true;
+            this.scheduleRender(0);
+          }
+        };
+        this.sparkSceneUpdatePromise = runUpdate()
+          .catch((error) => {
+            console.error("Spark scene update failed", error);
+          })
+          .finally(() => {
+            this.sparkSceneUpdatePromise = null;
+            if (this.sparkSceneDirty || this.sparkSceneUpdateQueued) {
+              this.queueSparkSceneUpdate();
+            }
+          });
+        return this.sparkSceneUpdatePromise;
       }
 
       isTimedRenderActive(now = performance.now()) {
-        if (this.state.renderPolicy === "always") {
-          return true;
-        }
-        return this.state.renderPolicy === "active" && now < this.activeRenderUntil;
+        return now < this.activeRenderUntil;
       }
 
       getRenderFrameIntervalMs() {
@@ -1548,7 +1589,59 @@ function startSparkViewer() {
         const elapsed = this.lastRenderFrameAt > 0
           ? now - this.lastRenderFrameAt
           : Number.POSITIVE_INFINITY;
-        return Math.max(0, this.getRenderFrameIntervalMs() - elapsed);
+        return Math.max(0, this.getRenderFrameIntervalMs(now) - elapsed);
+      }
+
+      startDeferredInteraction(durationMs = INTERACTION_PREVIEW_MS) {
+        const safeDuration = Math.max(0, durationMs);
+        this.renderInvalidated = true;
+        if (!this.deferredPreviewHandle) {
+          const previewIntervalMs = Math.max(
+            16,
+            Math.round(1000 / Math.min(Number(this.state.renderFps) || 60, INTERACTION_PREVIEW_FPS)),
+          );
+          this.deferredPreviewHandle = window.setInterval(() => {
+            this.flushRenderNow();
+          }, previewIntervalMs);
+        }
+        if (this.interactionFinalizeHandle) {
+          window.clearTimeout(this.interactionFinalizeHandle);
+        }
+        this.interactionFinalizeHandle = window.setTimeout(() => {
+          this.interactionFinalizeHandle = 0;
+          this.finishDeferredInteraction();
+        }, safeDuration + INTERACTION_SETTLE_MS);
+        this.scheduleRender(0);
+      }
+
+      finishDeferredInteraction() {
+        if (this.interactionFinalizeHandle) {
+          window.clearTimeout(this.interactionFinalizeHandle);
+          this.interactionFinalizeHandle = 0;
+        }
+        if (this.deferredPreviewHandle) {
+          window.clearInterval(this.deferredPreviewHandle);
+          this.deferredPreviewHandle = 0;
+        }
+        this.scheduledRenderAt = 0;
+        this.lastRenderFrameAt = 0;
+        this.renderInvalidated = true;
+        this.pendingForcedFrames = Math.max(this.pendingForcedFrames, 1);
+        this.flushRenderNow();
+      }
+
+      flushRenderNow() {
+        this.syncVisibleSceneItemTransforms();
+        this.renderer.setRenderTarget(null);
+        this.renderer.render(this.scene, this.camera);
+        this.updateFps();
+        this.updateCameraUi();
+        this.lastRenderFrameAt = performance.now();
+        this.scheduledRenderAt = 0;
+        this.renderInvalidated = false;
+        if (this.pendingForcedFrames > 0) {
+          this.pendingForcedFrames -= 1;
+        }
       }
 
       ensureDynoHandleArray(target, count, factory) {
@@ -1977,21 +2070,26 @@ function startSparkViewer() {
         item.transform.translateY = this.state.translateY;
         item.transform.translateZ = this.state.translateZ;
         this.syncTransformInputs();
-        this.scheduleSelectedTransformRefresh(false);
+        this.scheduleSelectedTransformRefresh(false, false);
         this.forceVisualRefresh(3);
       }
 
-      scheduleSelectedTransformRefresh(announce = false) {
+      scheduleSelectedTransformRefresh(announce = false, commit = false) {
         if (this.pendingTransformRefresh != null) {
           this.pendingTransformRefresh.announce = this.pendingTransformRefresh.announce || announce;
+          this.pendingTransformRefresh.commit = this.pendingTransformRefresh.commit || commit;
           return;
         }
-        this.pendingTransformRefresh = { announce };
+        this.pendingTransformRefresh = { announce, commit };
         requestAnimationFrame(() => {
           const refresh = this.pendingTransformRefresh;
           this.pendingTransformRefresh = null;
           if (!this.currentMesh) {
-            this.forceVisualRefresh(3);
+            if (refresh?.commit) {
+              this.finishDeferredInteraction();
+            } else {
+              this.startDeferredInteraction();
+            }
             return;
           }
           this.recomputeBounds();
@@ -2011,7 +2109,12 @@ function startSparkViewer() {
             );
             this.updateRenderChip("Transform updated");
           }
-          this.forceVisualRefresh(3);
+          this.queueSparkSceneUpdate();
+          if (refresh?.commit) {
+            this.finishDeferredInteraction();
+          } else {
+            this.invalidateRender(true);
+          }
         });
       }
 
@@ -2373,11 +2476,21 @@ function startSparkViewer() {
           return;
         }
         this.applySelectedLightHelperScale(true, syncInput);
+        if (commit) {
+          this.finishDeferredInteraction();
+        } else {
+          this.startDeferredInteraction();
+        }
       }
 
       setSelectedLightIntensity(value, { commit = true, syncInput = true } = {}) {
         this.state.lightIntensity = commit ? clampNumber(value, LIGHT_INTENSITY_LIMITS) : Number(value);
         this.applySelectedLightIntensity(true, syncInput);
+        if (commit) {
+          this.finishDeferredInteraction();
+        } else {
+          this.startDeferredInteraction();
+        }
       }
 
       applySelectedLightPosition(commit = false) {
@@ -2402,8 +2515,11 @@ function startSparkViewer() {
           }
           this.syncLightList();
           this.refreshLightingModel();
-          this.lastRenderFrameAt = 0;
-          this.forceVisualRefresh(4);
+          if (commit) {
+            this.finishDeferredInteraction();
+          } else {
+            this.startDeferredInteraction();
+          }
         }
         if (commit) {
           this.syncSelectedLightControls(true);
@@ -2480,17 +2596,16 @@ function startSparkViewer() {
           || previousLightCount !== this.activeLightCount;
         if (needsRebuild) {
           this.applyRenderMode(false);
+          this.queueSparkSceneUpdate();
           return;
         }
         if (this.hoverPointer) {
           this.updateHoverReadout();
         }
         this.renderPickedColors();
-        if (this.state.renderPolicy === "always") {
-          this.lastRenderFrameAt = 0;
-        }
         this.invalidateRender();
         this.forceVisualRefresh(2);
+        this.queueSparkSceneUpdate();
       }
 
       getSceneExposureScale() {
@@ -3074,6 +3189,11 @@ function startSparkViewer() {
       setOpacity(value, { commit = true, syncInput = true } = {}) {
         this.state.opacity = commit ? clampNumber(value, OPACITY_LIMITS) : Number(value);
         this.applyOpacity(true, syncInput);
+        if (commit) {
+          this.finishDeferredInteraction();
+        } else {
+          this.startDeferredInteraction();
+        }
       }
 
       applyFalloff(updateChip = true, syncInput = true) {
@@ -3103,6 +3223,11 @@ function startSparkViewer() {
       setFalloff(value, { commit = true, syncInput = true } = {}) {
         this.state.falloff = commit ? clampNumber(value, FALLOFF_LIMITS) : Number(value);
         this.applyFalloff(true, syncInput);
+        if (commit) {
+          this.finishDeferredInteraction();
+        } else {
+          this.startDeferredInteraction();
+        }
       }
 
       triggerBrowserDownload(fileName, buffer) {
@@ -3434,31 +3559,6 @@ function startSparkViewer() {
         this.invalidateRender(false);
       }
 
-      applyRenderPolicy(updateChip = true) {
-        const policy = this.state.renderPolicy === "always" ? "always" : "active";
-        this.state.renderPolicy = policy;
-        if (this.dom.renderPolicySelect) {
-          this.dom.renderPolicySelect.value = policy;
-        }
-        if (policy === "active") {
-          this.disableAlwaysAnimationLoop();
-          this.markRenderActivity();
-        } else {
-          this.ensureAlwaysAnimationLoop();
-          this.lastRenderFrameAt = 0;
-          this.renderInvalidated = true;
-        }
-        if (updateChip) {
-          this.updateRenderChip(policy === "always" ? "Render loop always" : "Render loop active");
-        }
-        this.invalidateRender(false);
-      }
-
-      setRenderPolicy(value) {
-        this.state.renderPolicy = value === "always" ? "always" : "active";
-        this.applyRenderPolicy(true);
-      }
-
       applyRenderFps(updateChip = true, syncInput = true) {
         const fps = clampNumber(this.state.renderFps, RENDER_FPS_LIMITS);
         this.state.renderFps = fps;
@@ -3722,12 +3822,20 @@ function startSparkViewer() {
         }
         this.syncTransformGizmo();
         if (!this.currentMesh) {
-          this.forceVisualRefresh(3);
+          if (commit) {
+            this.finishDeferredInteraction();
+          } else {
+            this.startDeferredInteraction();
+          }
           return;
         }
         this.syncVisibleSceneItemTransforms();
-        this.scheduleSelectedTransformRefresh(announce);
-        this.forceVisualRefresh(3);
+        if (commit) {
+          this.finishDeferredInteraction();
+        } else {
+          this.startDeferredInteraction();
+        }
+        this.scheduleSelectedTransformRefresh(announce, commit);
       }
 
       syncTransformInputs() {
@@ -4495,13 +4603,10 @@ function startSparkViewer() {
         this.currentGridStep = null;
 
         const helperBounds = this.sceneBounds ?? this.bounds;
-        const helperSphere = this.sceneBoundsSphere ?? this.boundsSphere;
         if (!helperBounds) {
           return;
         }
 
-        const size = helperBounds.getSize(new THREE.Vector3());
-        const radius = Math.max(helperSphere?.radius || 0.5, 0.5);
         const autoGridBounds = this.sceneItems[0]?.baseLocalBounds ?? helperBounds;
         const autoGridSizeVector = autoGridBounds.getSize(new THREE.Vector3());
         const autoGridSize = Math.max(autoGridSizeVector.x, autoGridSizeVector.z, 1) * 1.8;
@@ -4525,11 +4630,12 @@ function startSparkViewer() {
         this.currentGridStep = gridStep;
 
         if (this.state.showAxes) {
-          this.axesHelper = new THREE.AxesHelper(radius);
+          const axesLength = Math.max(gridSize * 0.5, 0.5);
+          this.axesHelper = new THREE.AxesHelper(axesLength);
           this.axesHelper.position.set(0, 0, 0);
           this.scene.add(this.axesHelper);
           this.axisLabelGroup = new THREE.Group();
-          const labelOffset = Math.max(radius * 1.12, 0.75);
+          const labelOffset = Math.max(axesLength * 1.12, 0.75);
           const xLabel = createAxisLabelSprite("X", "#ff6d6d");
           xLabel.position.set(labelOffset, 0, 0);
           const yLabel = createAxisLabelSprite("Y", "#63ff92");
@@ -4550,7 +4656,6 @@ function startSparkViewer() {
       renderLoop() {
         const frameStartedAt = performance.now();
         const delta = Math.min(this.clock.getDelta(), 0.05);
-        const alwaysRender = this.state.renderPolicy === "always";
         let keepAnimating = false;
         const movedByKeys = Boolean(this.firstPerson.update(delta));
         if (movedByKeys && this.activeMode === "orbit") {
@@ -4566,31 +4671,23 @@ function startSparkViewer() {
           keepAnimating = movedByKeys;
         }
         keepAnimating = keepAnimating || movedByKeys;
-        this.syncVisibleSceneItemTransforms();
         const timedRenderActive = this.isTimedRenderActive(frameStartedAt);
-        const shouldDraw = this.renderInvalidated
+        const scheduledReady = !this.scheduledRenderAt || frameStartedAt >= this.scheduledRenderAt;
+        const shouldDraw = (this.renderInvalidated && scheduledReady)
           || keepAnimating
           || this.pendingForcedFrames > 0
           || timedRenderActive;
+        if (!shouldDraw) {
+          return;
+        }
+        this.syncVisibleSceneItemTransforms();
         const frameDelay = this.getRenderFrameDelay(frameStartedAt);
-        const canDrawNow = alwaysRender
-          || frameDelay <= 1
-          || this.renderInvalidated
+        const canDrawNow = frameDelay <= 1
+          || (this.renderInvalidated && scheduledReady)
           || keepAnimating
           || this.pendingForcedFrames > 0;
         if (shouldDraw && canDrawNow) {
-          this.renderer.setRenderTarget(null);
-          this.renderer.render(this.scene, this.camera);
-          this.updateFps();
-          this.updateCameraUi();
-          this.lastRenderFrameAt = performance.now();
-          this.renderInvalidated = false;
-          if (this.pendingForcedFrames > 0) {
-            this.pendingForcedFrames -= 1;
-          }
-        }
-        if (!alwaysRender && (this.isTimedRenderActive() || keepAnimating || this.renderInvalidated || this.pendingForcedFrames > 0)) {
-          this.scheduleRender(this.getRenderFrameDelay());
+          this.flushRenderNow();
         }
       }
 
@@ -4630,6 +4727,7 @@ function startSparkViewer() {
           this.updateMetaUi();
           this.updateCameraClipping();
         }
+        this.queueSparkSceneUpdate();
         this.updateStatus("Reset splat transform");
         this.updateRenderChip("Transform reset");
         this.forceVisualRefresh(3);
@@ -4741,6 +4839,7 @@ function startSparkViewer() {
           this.updateStatus(`Render mode: ${RENDER_MODE_LABELS[this.state.renderMode] || "Beauty"}`);
         }
         this.invalidateRender();
+        this.queueSparkSceneUpdate();
       }
 
       syncOrbitTargetFromView() {
@@ -4755,30 +4854,13 @@ function startSparkViewer() {
       }
 
       scheduleRender(delayMs = 0) {
-        if (this.state.renderPolicy === "always" && this.animationLoopEnabled) {
-          return;
+        const targetTime = performance.now() + Math.max(0, Number(delayMs) || 0);
+        if (delayMs <= 0) {
+          this.scheduledRenderAt = 0;
+        } else if (!this.scheduledRenderAt || targetTime < this.scheduledRenderAt) {
+          this.scheduledRenderAt = targetTime;
         }
-        if (delayMs > 0) {
-          if (this.renderRequestHandle || this.renderTimeoutHandle) {
-            return;
-          }
-          this.renderTimeoutHandle = window.setTimeout(() => {
-            this.renderTimeoutHandle = 0;
-            this.scheduleRender(0);
-          }, delayMs);
-          return;
-        }
-        if (this.renderTimeoutHandle) {
-          window.clearTimeout(this.renderTimeoutHandle);
-          this.renderTimeoutHandle = 0;
-        }
-        if (this.renderRequestHandle) {
-          return;
-        }
-        this.renderRequestHandle = window.requestAnimationFrame(() => {
-          this.renderRequestHandle = 0;
-          this.renderLoop();
-        });
+        this.startAnimationLoop();
       }
 
       forceVisualRefresh(frameCount = 2) {
@@ -4806,39 +4888,14 @@ function startSparkViewer() {
 
       invalidateRender(immediate = true) {
         this.renderInvalidated = true;
-        if (this.state.renderPolicy === "always") {
-          this.ensureAlwaysAnimationLoop();
-        }
-        if (immediate && this.renderTimeoutHandle) {
-          window.clearTimeout(this.renderTimeoutHandle);
-          this.renderTimeoutHandle = 0;
+        if (immediate) {
+          this.scheduledRenderAt = 0;
+        } else {
+          this.scheduleRender(this.idleRenderDelayMs);
+          return;
         }
         this.markRenderActivity();
-        this.scheduleRender(immediate ? 0 : this.idleRenderDelayMs);
-      }
-
-      ensureAlwaysAnimationLoop() {
-        if (this.animationLoopEnabled) {
-          return;
-        }
-        if (this.renderTimeoutHandle) {
-          window.clearTimeout(this.renderTimeoutHandle);
-          this.renderTimeoutHandle = 0;
-        }
-        if (this.renderRequestHandle) {
-          window.cancelAnimationFrame(this.renderRequestHandle);
-          this.renderRequestHandle = 0;
-        }
-        this.animationLoopEnabled = true;
-        this.renderer.setAnimationLoop(() => this.renderLoop());
-      }
-
-      disableAlwaysAnimationLoop() {
-        if (!this.animationLoopEnabled) {
-          return;
-        }
-        this.animationLoopEnabled = false;
-        this.renderer.setAnimationLoop(null);
+        this.scheduleRender(0);
       }
 
       captureCurrentPoseAsDefault() {
@@ -4893,7 +4950,6 @@ function startSparkViewer() {
           item.modelRoot.updateMatrixWorld(true);
           item.rotationPivot.updateMatrixWorld(true);
           item.mesh.updateMatrixWorld(true);
-          item.mesh.context?.transform?.updateFromMatrix(item.mesh.matrixWorld);
         });
       }
 
