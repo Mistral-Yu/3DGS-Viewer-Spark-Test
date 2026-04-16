@@ -2,6 +2,7 @@ import * as THREE from "./vendor/three/three.module.js";
 import { OrbitControls } from "./vendor/three/examples/jsm/controls/OrbitControls.js";
 import { TransformControls } from "./vendor/three/examples/jsm/controls/TransformControls.js";
 import * as Spark from "./vendor/spark/spark.module.js";
+import { computeUiScale } from "./viewer-layout.mjs";
 
 function startSparkViewer() {
     const {
@@ -665,11 +666,11 @@ function startSparkViewer() {
       return buffer;
     };
 
-    const createPrimitiveSpec = (kind) => {
+    const createPrimitiveSpec = async (kind) => {
       if (!window.PrimitiveLibrary?.createPrimitiveDefinition) {
         throw new Error("Primitive library failed to load");
       }
-      const definition = window.PrimitiveLibrary.createPrimitiveDefinition({
+      const definition = await window.PrimitiveLibrary.createPrimitiveDefinition({
         kind,
         THREE,
         helpers: {
@@ -1104,6 +1105,11 @@ function startSparkViewer() {
         this.sparkSceneUpdateQueued = false;
         this.sparkSceneUpdatePromise = null;
         this.postLoadRefreshHandle = 0;
+        this.stageResizeObserver = null;
+        this.handleViewportResize = () => {
+          this.syncUiScale();
+          this.onResize();
+        };
         this.idleRenderDelayMs = 160;
         this.depthRangeLimits = { min: 0.1, max: 100 };
         this.depthRangeIsAuto = true;
@@ -1205,10 +1211,12 @@ function startSparkViewer() {
         this.updateRenderChip("Idle");
         this.updateStatus("Viewer ready");
         this.orbitControls.addEventListener("change", () => this.invalidateRender());
-        window.addEventListener("resize", () => {
-          this.syncUiScale();
-          this.onResize();
-        });
+        window.addEventListener("resize", this.handleViewportResize);
+        window.visualViewport?.addEventListener("resize", this.handleViewportResize);
+        if (typeof ResizeObserver === "function") {
+          this.stageResizeObserver = new ResizeObserver(() => this.onResize());
+          this.stageResizeObserver.observe(this.dom.stage);
+        }
         this.renderer.domElement.addEventListener("dblclick", (event) => this.focusPick(event));
         this.renderer.domElement.addEventListener("contextmenu", (event) => event.preventDefault());
         this.renderer.domElement.addEventListener("pointerdown", (event) => {
@@ -1505,8 +1513,11 @@ function startSparkViewer() {
       }
 
       syncUiScale() {
-        const dpr = Math.max(window.devicePixelRatio || 1, 1);
-        const compensation = THREE.MathUtils.clamp(1 / dpr, 0.5, 1);
+        const viewport = window.visualViewport;
+        const compensation = computeUiScale({
+          viewportHeight: viewport?.height ?? window.innerHeight,
+          viewportWidth: viewport?.width ?? window.innerWidth,
+        });
         document.documentElement.style.setProperty("--ui-scale", compensation.toFixed(4));
       }
 
@@ -4059,16 +4070,30 @@ function startSparkViewer() {
       }
 
       async loadPrimitive(kind) {
-        const spec = createPrimitiveSpec(kind);
-        await this.loadMesh({
-          bytes: spec.bytes,
-          fileBytes: spec.buffer,
-          fileName: spec.name,
-          fileType: SplatFileType?.PLY ?? "ply",
-          localBounds: spec.localBounds,
-          primitiveMeta: spec,
-          source: spec.source,
-        });
+        const requestToken = ++this.loadToken;
+        try {
+          const spec = await createPrimitiveSpec(kind);
+          if (requestToken !== this.loadToken) {
+            return;
+          }
+          await this.loadMesh({
+            bytes: spec.bytes,
+            fileBytes: spec.buffer,
+            fileName: spec.name,
+            fileType: SplatFileType.PLY,
+            loadToken: requestToken,
+            localBounds: spec.localBounds,
+            primitiveMeta: spec,
+            source: spec.source,
+          });
+        } catch (error) {
+          if (requestToken !== this.loadToken) {
+            return;
+          }
+          this.updateStatus(error instanceof Error ? error.message : "Primitive load failed");
+          this.updateRenderChip("Error");
+          this.setProgress("Load failed", 0);
+        }
       }
 
       async loadMesh({
@@ -4076,11 +4101,12 @@ function startSparkViewer() {
         fileBytes,
         fileName,
         fileType,
+        loadToken,
         localBounds,
         primitiveMeta,
         source,
       }) {
-        const token = ++this.loadToken;
+        const token = loadToken ?? ++this.loadToken;
         const hadSceneItems = this.sceneItems.length > 0;
         const startedAt = performance.now();
         this.updateStatus(`Loading ${fileName}...`);

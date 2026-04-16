@@ -5,6 +5,7 @@ Primitive source folder for the direct-open 3DGS viewer.
   - `Sphere`
   - `Cube`
   - `Macbeth`
+  - `Human 1.8m`
   - `Bunny`
   - `dragon`
   - `mesh-primitive-data.js`

@@ -1,4 +1,11 @@
 (function () {
+  let humanBlueprintApi = null;
+  const loadHumanBlueprintApi = async () => {
+    if (!humanBlueprintApi) {
+      humanBlueprintApi = import('./human-blueprint.mjs');
+    }
+    return humanBlueprintApi;
+  };
   const MACBETH_EXR_SOURCE_URL =
     "https://raw.githubusercontent.com/colour-science/colour-nuke/master/colour_nuke/resources/images/ColorChecker2014/sRGB_ColorChecker2014.exr";
   const STANFORD_SCAN_REPOSITORY_URL = "https://graphics.stanford.edu/data/3Dscanrep/";
@@ -481,18 +488,97 @@
     };
   };
 
-  const createPrimitiveDefinition = ({ kind, THREE, helpers }) => {
-    if (kind === "cube") {
+  const createHumanPrimitive = async ({ THREE, helpers }) => {
+    const { HUMAN_HEIGHT_METERS, createHumanBlueprint } = await loadHumanBlueprintApi();
+    const blueprint = createHumanBlueprint({ heightMeters: HUMAN_HEIGHT_METERS });
+    const splats = [];
+    const hoverEntries = [];
+
+    blueprint.parts.forEach((part) => {
+      if (part.kind === 'ellipsoid') {
+        pushEllipsoidSplats({
+          THREE,
+          alpha: part.alpha,
+          center: new THREE.Vector3(...part.center),
+          color: new THREE.Color(...part.color),
+          count: part.count,
+          helpers,
+          radii: new THREE.Vector3(...part.radii),
+          scaleMajor: part.scaleMajor,
+          scaleMinor: part.scaleMinor,
+          splats,
+        });
+      } else if (part.kind === 'tube') {
+        const points = part.path.map((coords) => new THREE.Vector3(...coords));
+        pushTubeSplats({
+          THREE,
+          alpha: part.alpha,
+          color: new THREE.Color(...part.color),
+          helpers,
+          path: (t) => {
+            const clampedT = Math.min(Math.max(t, 0), 1);
+            if (points.length === 1) {
+              return points[0].clone();
+            }
+            const segmentPosition = clampedT * (points.length - 1);
+            const segmentIndex = Math.min(Math.floor(segmentPosition), points.length - 2);
+            const localT = segmentPosition - segmentIndex;
+            return points[segmentIndex].clone().lerp(points[segmentIndex + 1], localT);
+          },
+          radialSteps: part.radialSteps,
+          radiusAt: () => part.radius,
+          segments: part.segments,
+          splats,
+        });
+      }
+      hoverEntries.push({
+        alpha: part.alpha,
+        color: part.color.slice(),
+        label: part.label,
+        position: part.center ? part.center.slice() : part.path[Math.floor(part.path.length / 2)].slice(),
+        scale: part.radii ? part.radii.slice() : [part.radius * 1.4, part.radius * 1.4, part.radius * 1.4],
+      });
+    });
+
+    const bounds = new THREE.Box3(
+      new THREE.Vector3(blueprint.bounds.min.x, blueprint.bounds.min.y, blueprint.bounds.min.z),
+      new THREE.Vector3(blueprint.bounds.max.x, blueprint.bounds.max.y, blueprint.bounds.max.z),
+    );
+    return {
+      compression: 'Procedural binary PLY',
+      compressionRatio: '-',
+      defaultSettings: {
+        falloff: 1,
+        opacity: 1,
+      },
+      encoding: 'Runtime-authored SH0 human reference primitive',
+      format: 'PLY',
+      hoverEntries,
+      localBounds: bounds,
+      name: `Primitive ${blueprint.label}`,
+      packedCapacity: '-',
+      scaleRange: helpers.formatScaleRange(0.015, 0.06),
+      shDegree: 0,
+      source: 'Generated primitive',
+      splats,
+    };
+  };
+
+  const createPrimitiveDefinition = async ({ kind, THREE, helpers }) => {
+    if (kind === 'cube') {
       return createCubePrimitive({ THREE, helpers });
     }
-    if (kind === "macbeth") {
+    if (kind === 'macbeth') {
       return createMacbethPrimitive({ THREE, helpers });
     }
-    if (kind === "bunny") {
-      return createMeshPrimitive({ THREE, helpers, key: "bunny" });
+    if (kind === 'bunny') {
+      return createMeshPrimitive({ THREE, helpers, key: 'bunny' });
     }
-    if (kind === "dragon") {
-      return createMeshPrimitive({ THREE, helpers, key: "dragon" });
+    if (kind === 'dragon') {
+      return createMeshPrimitive({ THREE, helpers, key: 'dragon' });
+    }
+    if (kind === 'human-1p8m') {
+      return createHumanPrimitive({ THREE, helpers });
     }
     return createSpherePrimitive({ THREE, helpers });
   };

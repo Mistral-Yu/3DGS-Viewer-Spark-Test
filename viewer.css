@@ -65,7 +65,9 @@ code {
 }
 
 .app-shell {
+  width: min(var(--shell-width), calc(100dvw - (2 * var(--space-1))));
   width: min(var(--shell-width), calc(100vw - (2 * var(--space-1))));
+  height: min(var(--shell-height), calc(100dvh - (2 * var(--space-1))));
   height: min(var(--shell-height), calc(100vh - (2 * var(--space-1))));
   margin: 0 auto;
   display: grid;
