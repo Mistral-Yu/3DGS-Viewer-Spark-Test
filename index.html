@@ -168,11 +168,11 @@
               <button class="toolbar-button toolbar-button-primary" type="button" id="animation-play-button" title="Play the current animation script.">Play</button>
               <button class="toolbar-button" type="button" id="animation-pause-button" title="Pause animation playback.">Pause</button>
               <button class="toolbar-button" type="button" id="animation-reset-button" title="Return animation time to the start.">Reset</button>
+              <label class="timeline-loop-toggle" title="Loop playback when the timeline reaches the end.">
+                <input id="animation-loop-checkbox" type="checkbox" checked>
+                <span>Loop</span>
+              </label>
             </div>
-            <label class="timeline-loop-toggle" title="Loop playback when the timeline reaches the end.">
-              <input id="animation-loop-checkbox" type="checkbox" checked>
-              <span>Loop</span>
-            </label>
           </div>
           <div class="timeline-scrubber-row">
             <span class="timeline-time" id="animation-time-label">0.00s / 6.00s</span>
@@ -570,8 +570,8 @@
                   </div>
                 </label>
                 <div class="button-pair">
-                  <button class="toolbar-button" type="button" id="animation-open-button" title="Load an animation script JSON file from this device.">Load Script</button>
-                  <button class="toolbar-button" type="button" id="animation-save-button" title="Save the currently displayed script to this device.">Save Script</button>
+                  <button class="toolbar-button" type="button" id="animation-open-button" title="Load an animation script JS file from this device into the script editor.">Load Script</button>
+                  <button class="toolbar-button" type="button" id="animation-save-button" title="Save the currently displayed animation script JS file to this device.">Save Script</button>
                 </div>
                 <div class="button-pair">
                   <button class="toolbar-button toolbar-button-primary" type="button" id="animation-apply-button" title="Apply the script currently shown in the editor to the loaded splats.">Apply Script</button>
@@ -584,11 +584,11 @@
                   <p class="section-label">Animation</p>
                   <h2>Script Editor</h2>
                 </div>
-                <label class="field" title="Edit the current per-splat animation script as JSON and apply it to the loaded splats.">
-                  <span>Script JSON</span>
-                  <textarea class="script-editor" id="animation-script-editor" spellcheck="false"></textarea>
+                <label class="field" title="Edit the current animation script source, including parameter values and movement code, then apply it to the loaded splats.">
+                  <span>Script Source</span>
+                  <textarea class="script-editor" id="animation-script-editor" spellcheck="false" rows="24"></textarea>
                 </label>
-                <p class="progress-label" id="animation-script-status">No animation script loaded. Use Splat Explosion, open a script, or keep animation off.</p>
+                <p class="progress-label" id="animation-script-status">No animation script loaded. Use Splat Explosion, load a script, or keep animation off.</p>
               </div>
             </section>
 
@@ -643,6 +643,6 @@
   </div>
 
   <input id="file-input" type="file" accept=".ply,.spz,.splat,.ksplat" hidden>
-  <input id="animation-file-input" type="file" accept=".json,.txt" hidden>
+  <input id="animation-file-input" type="file" accept=".js,.mjs,.json,.txt" hidden>
 </body>
 </html>

@@ -394,23 +394,41 @@ code {
 .timeline-toolbar {
   display: flex;
   align-items: center;
-  justify-content: space-between;
+  justify-content: flex-start;
   gap: var(--space-2);
   flex-wrap: nowrap;
 }
 
 .button-pair-timeline {
-  grid-template-columns: repeat(3, minmax(0, 1fr));
+  grid-template-columns: repeat(4, minmax(0, 1fr));
   flex: 1 1 auto;
 }
 
 .timeline-loop-toggle {
   display: inline-flex;
   align-items: center;
+  justify-content: center;
   gap: 8px;
+  min-height: calc(38px * var(--ui-scale));
+  padding: 0 var(--space-4);
+  border: 1px solid var(--line);
+  border-radius: 999px;
+  background: rgba(12, 21, 32, 0.74);
   color: var(--muted);
   font-family: "IBM Plex Mono", monospace;
   font-size: 0.76rem;
+  cursor: pointer;
+  white-space: nowrap;
+}
+
+.timeline-loop-toggle:has(input:checked) {
+  border-color: rgba(127, 240, 215, 0.42);
+  background: linear-gradient(135deg, rgba(127, 240, 215, 0.18), rgba(38, 214, 175, 0.24));
+  color: var(--text);
+}
+
+.timeline-loop-toggle input {
+  margin: 0;
 }
 
 .timeline-scrubber-row {
@@ -428,7 +446,7 @@ code {
 }
 
 .script-editor {
-  min-height: calc(240px * var(--ui-scale));
+  min-height: calc(360px * var(--ui-scale));
   padding: var(--space-3);
   border: 1px solid var(--line);
   border-radius: 12px;

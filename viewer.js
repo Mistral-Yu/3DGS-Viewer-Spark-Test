@@ -4,11 +4,13 @@ import { TransformControls } from "./vendor/three/examples/jsm/controls/Transfor
 import * as Spark from "./vendor/spark/spark.module.js";
 import { computeLayoutMode, computePanelWidths, computeShellSize, computeUiScale } from "./viewer-layout.mjs";
 import {
+  createAnimationModifierFromScript,
   DEFAULT_ANIMATION_SCRIPT_NAME,
   buildAnimationDownloadName,
   createDefaultAnimationPlaybackState,
   getAnimationPresetScriptText,
   parseAnimationScript,
+  serializeAnimationScript,
   shouldRenderAnimationFrame,
 } from "./viewer-animation.mjs";
 import { DEFAULT_LIGHT_COLOR, DEFAULT_LIGHT_HELPER_SCALE, clampLightColor, createDefaultLightState } from "./viewer-lighting.mjs";
@@ -490,60 +492,6 @@ function startSparkViewer() {
           }),
         };
       });
-
-    const createExplosionAnimationModifier = ({
-      distanceScale,
-      epsilon,
-      epsilonVector,
-      opacityPower,
-      origin,
-      scaleInfluence,
-      speed,
-      strength,
-      swirl,
-      time,
-      up,
-    }) =>
-      dynoBlock({ gsplat: Gsplat }, { gsplat: Gsplat }, ({ gsplat }) => {
-        if (!gsplat) {
-          throw new Error("No gsplat input");
-        }
-        const outputs = splitGsplat(gsplat).outputs;
-        const floatZero = dynoConst("float", 0);
-        const floatOne = dynoConst("float", 1);
-        const burstWave = dynoConst("float", 8.0);
-        const relative = sub(outputs.center, origin);
-        const distanceFromOrigin = max(length(relative), epsilon);
-        const direction = normalize(add(relative, epsilonVector));
-        const tangent = normalize(add(cross(direction, up), epsilonVector));
-        const scaleMagnitude = max(length(outputs.scales), epsilon);
-        const scaleFactor = add(floatOne, mul(scaleMagnitude, scaleInfluence));
-        const travel = sub(mul(mul(time, speed), scaleFactor), mul(distanceFromOrigin, distanceScale));
-        const burst = clamp(travel, floatZero, floatOne);
-        const fade = pow(sub(floatOne, burst), opacityPower);
-        const radialOffset = mul(direction, mul(strength, mul(add(burst, mul(burst, burst)), scaleFactor)));
-        const swirlOffset = mul(
-          tangent,
-          mul(
-            cos(add(mul(distanceFromOrigin, burstWave), mul(time, add(swirl, dynoConst("float", 1.5))))),
-            mul(strength, mul(swirl, burst)),
-          ),
-        );
-        return {
-          gsplat: combineGsplat({
-            gsplat,
-            center: add(outputs.center, add(radialOffset, swirlOffset)),
-            opacity: clamp(fade, floatZero, floatOne),
-          }),
-        };
-      });
-
-    const createAnimationModifierFromScript = (script, handles) => {
-      if (!script || script.preset !== "explosion") {
-        return null;
-      }
-      return createExplosionAnimationModifier(handles);
-    };
 
     const getFileExtension = (name) => (name.split(".").pop() || "").toLowerCase();
 
@@ -5323,19 +5271,7 @@ function startSparkViewer() {
       syncAnimationEditor() {
         if (this.dom.animationScriptEditor) {
           this.dom.animationScriptEditor.value = this.activeAnimationScript
-            ? JSON.stringify({
-              version: 1,
-              name: this.activeAnimationScript.name,
-              preset: this.activeAnimationScript.preset,
-              duration: this.activeAnimationScript.duration,
-              loop: this.activeAnimationScript.loop,
-              origin: [
-                this.activeAnimationScript.origin.x,
-                this.activeAnimationScript.origin.y,
-                this.activeAnimationScript.origin.z,
-              ],
-              params: this.activeAnimationScript.params,
-            }, null, 2)
+            ? serializeAnimationScript(this.activeAnimationScript)
             : "";
         }
         if (this.dom.animationPresetSelect) {
@@ -5344,7 +5280,7 @@ function startSparkViewer() {
         if (this.dom.animationScriptStatus) {
           this.dom.animationScriptStatus.textContent = this.activeAnimationScript
             ? `${this.activeAnimationScript.name} is loaded. Apply the script to animate the splats.`
-            : "No animation script loaded. Use Splat Explosion, open a script, or keep animation off.";
+            : "No animation script loaded. Use Splat Explosion, load a script, or keep animation off.";
         }
       }
 
@@ -5435,7 +5371,10 @@ function startSparkViewer() {
           this.state.animationTime = Math.min(this.state.animationTime, this.state.animationDuration);
           this.state.animationApplied = true;
           this.applyActiveAnimationUniforms();
-          this.activeAnimationModifier = createAnimationModifierFromScript(this.activeAnimationScript, this.animationModifierHandles);
+          this.activeAnimationModifier = createAnimationModifierFromScript(this.activeAnimationScript, {
+            dyno,
+            handles: this.animationModifierHandles,
+          });
           this.syncAnimationEditor();
           this.syncAnimationControls(true);
           this.applyRenderMode(false);
@@ -5542,8 +5481,19 @@ function startSparkViewer() {
       async loadAnimationScriptFile(file) {
         try {
           const text = await file.text();
-          this.dom.animationScriptEditor.value = text;
-          this.applyAnimationScript(true);
+          this.activeAnimationScript = parseAnimationScript(text);
+          this.activeAnimationModifier = null;
+          this.state.animationApplied = false;
+          this.state.animationLoop = this.activeAnimationScript.loop;
+          this.state.animationDuration = this.activeAnimationScript.duration;
+          this.state.animationPlaying = false;
+          this.state.animationTime = 0;
+          this.syncAnimationEditor();
+          this.syncAnimationControls(true);
+          this.applyRenderMode(false);
+          this.forceVisualRefresh(2);
+          this.queueSparkSceneUpdate();
+          this.updateStatus(`Loaded ${this.activeAnimationScript.name}`);
         } catch (error) {
           const message = error instanceof Error ? error.message : "Failed to read animation script";
           this.updateStatus(message);
@@ -5554,7 +5504,7 @@ function startSparkViewer() {
       }
 
       saveAnimationScript() {
-        const blob = new Blob([this.dom.animationScriptEditor?.value || ""], { type: "application/json;charset=utf-8" });
+        const blob = new Blob([this.dom.animationScriptEditor?.value || ""], { type: "text/javascript;charset=utf-8" });
         const link = document.createElement("a");
         link.href = URL.createObjectURL(blob);
         link.download = buildAnimationDownloadName(this.activeAnimationScript?.name || DEFAULT_ANIMATION_SCRIPT_NAME);

@@ -13,13 +13,17 @@ import {
 
 test('only the explosion preset remains built in', () => {
   assert.deepEqual(Object.keys(ANIMATION_PRESET_LIBRARY), ['explosion']);
-  const parsed = parseAnimationScript(getAnimationPresetScriptText('explosion'));
+  const presetSource = getAnimationPresetScriptText('explosion');
+  assert.match(presetSource, /createModifier/);
+
+  const parsed = parseAnimationScript(presetSource);
 
   assert.equal(parsed.name, DEFAULT_ANIMATION_SCRIPT_NAME);
   assert.equal(parsed.preset, 'explosion');
   assert.equal(parsed.loop, true);
   assert.ok(parsed.duration > 0);
   assert.ok(parsed.params.strength > 0);
+  assert.equal(typeof parsed.createModifier, 'function');
 });
 
 test('legacy diffusion scripts are rejected instead of being silently remapped', () => {
@@ -30,7 +34,7 @@ test('legacy diffusion scripts are rejected instead of being silently remapped',
 });
 
 test('parseAnimationScript clamps numeric parameters and keeps origin vector', () => {
-  const parsed = parseAnimationScript(JSON.stringify({
+  const parsed = parseAnimationScript(`({
     name: 'Custom Burst',
     preset: 'explosion',
     loop: false,
@@ -44,7 +48,8 @@ test('parseAnimationScript clamps numeric parameters and keeps origin vector', (
       strength: 8,
       swirl: 4,
     },
-  }));
+    createModifier: ({ handles }) => handles.speed,
+  })`);
 
   assert.deepEqual(parsed.origin, { x: 1, y: 2, z: 3 });
   assert.equal(parsed.loop, false);
@@ -52,10 +57,25 @@ test('parseAnimationScript clamps numeric parameters and keeps origin vector', (
   assert.equal(parsed.params.opacityPower, 4);
   assert.equal(parsed.params.scaleInfluence, 3);
   assert.equal(parsed.params.speed, 2.5);
+  assert.equal(typeof parsed.createModifier, 'function');
+});
+
+test('parseAnimationScript rejects scripts without movement code', () => {
+  assert.throws(
+    () => parseAnimationScript(`({
+      name: 'Broken Script',
+      preset: 'explosion',
+      duration: 2,
+      loop: true,
+      origin: [0, 0, 0],
+      params: { speed: 1 }
+    })`),
+    /createModifier/,
+  );
 });
 
 test('buildAnimationDownloadName normalizes the script name for saving', () => {
-  assert.equal(buildAnimationDownloadName('Diffuse / Burst v1'), 'diffuse-burst-v1.json');
+  assert.equal(buildAnimationDownloadName('Diffuse / Burst v1'), 'diffuse-burst-v1.js');
 });
 
 test('createDefaultAnimationPlaybackState keeps animation off when no script is loaded', () => {

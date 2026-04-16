@@ -1,6 +1,94 @@
 export const DEFAULT_ANIMATION_SCRIPT_NAME = 'Splat Explosion';
 
-const PRESET_LIBRARY = {
+const EXPLOSION_SCRIPT_SOURCE = `({
+  version: 1,
+  name: 'Splat Explosion',
+  preset: 'explosion',
+  duration: 3.2,
+  loop: true,
+  origin: [0, 0, 0],
+  params: {
+    distanceScale: 1.1,
+    opacityPower: 0.9,
+    scaleInfluence: 1.6,
+    speed: 1.6,
+    strength: 3.4,
+    swirl: 1.25,
+  },
+  createModifier: ({ dyno, handles }) => {
+    const {
+      Gsplat,
+      add,
+      clamp,
+      combineGsplat,
+      cos,
+      cross,
+      dynoBlock,
+      dynoConst,
+      length,
+      max = dyno.Max,
+      mul,
+      normalize,
+      pow,
+      splitGsplat,
+      sub,
+    } = dyno;
+    const {
+      distanceScale,
+      epsilon,
+      epsilonVector,
+      opacityPower,
+      origin,
+      scaleInfluence,
+      speed,
+      strength,
+      swirl,
+      time,
+      up,
+    } = handles;
+    return dynoBlock({ gsplat: Gsplat }, { gsplat: Gsplat }, ({ gsplat }) => {
+      if (!gsplat) {
+        throw new Error('No gsplat input');
+      }
+      const outputs = splitGsplat(gsplat).outputs;
+      const floatZero = dynoConst('float', 0);
+      const floatOne = dynoConst('float', 1);
+      const burstWave = dynoConst('float', 8.0);
+      const relative = sub(outputs.center, origin);
+      const distanceFromOrigin = max(length(relative), epsilon);
+      const direction = normalize(add(relative, epsilonVector));
+      const tangent = normalize(add(cross(direction, up), epsilonVector));
+      const scaleMagnitude = max(length(outputs.scales), epsilon);
+      const scaleFactor = add(floatOne, mul(scaleMagnitude, scaleInfluence));
+      const travel = sub(mul(mul(time, speed), scaleFactor), mul(distanceFromOrigin, distanceScale));
+      const burst = clamp(travel, floatZero, floatOne);
+      const fade = pow(sub(floatOne, burst), opacityPower);
+      const radialOffset = mul(direction, mul(strength, mul(add(burst, mul(burst, burst)), scaleFactor)));
+      const swirlOffset = mul(
+        tangent,
+        mul(
+          cos(add(mul(distanceFromOrigin, burstWave), mul(time, add(swirl, dynoConst('float', 1.5))))),
+          mul(strength, mul(swirl, burst)),
+        ),
+      );
+      return {
+        gsplat: combineGsplat({
+          gsplat,
+          center: add(outputs.center, add(radialOffset, swirlOffset)),
+          opacity: clamp(fade, floatZero, floatOne),
+        }),
+      };
+    });
+  },
+})`;
+
+const PRESET_SCRIPT_LIBRARY = {
+  explosion: EXPLOSION_SCRIPT_SOURCE,
+};
+
+export const ANIMATION_PRESET_LIBRARY = PRESET_SCRIPT_LIBRARY;
+
+const PRESET_DEFAULTS = {
   explosion: {
     duration: 3.2,
     loop: true,
@@ -16,8 +104,6 @@ const PRESET_LIBRARY = {
   },
 };
 
-export const ANIMATION_PRESET_LIBRARY = PRESET_LIBRARY;
-
 const PARAM_LIMITS = {
   distanceScale: { min: 0, max: 6, default: 1.2 },
   opacityPower: { min: 0.1, max: 4, default: 1.2 },
@@ -29,6 +115,7 @@ const PARAM_LIMITS = {
 
 const clamp = (value, min, max) => Math.min(Math.max(value, min), max);
 const round = (value, digits = 4) => Number(Number(value).toFixed(digits));
+const indentBlock = (text, spaces = 2) => String(text).replace(/\n/g, `\n${' '.repeat(spaces)}`);
 
 const normalizeOrigin = (origin) => {
   const values = Array.isArray(origin) ? origin : [origin?.x, origin?.y, origin?.z];
@@ -49,14 +136,28 @@ const normalizeParams = (params = {}, defaults = {}) => {
   return result;
 };
 
-export function parseAnimationScript(text) {
-  const source = JSON.parse(String(text));
-  if (source.preset != null && !(source.preset in PRESET_LIBRARY)) {
+const evaluateAnimationScriptSource = (text) => {
+  const source = String(text || '').trim();
+  if (!source) {
+    throw new Error('Animation script is empty');
+  }
+  return Function(`"use strict"; return (${source}\n);`)();
+};
+
+const normalizeAnimationConfig = (source) => {
+  if (!source || typeof source !== 'object') {
+    throw new Error('Animation script must evaluate to an object');
+  }
+  if (source.preset != null && !(source.preset in PRESET_SCRIPT_LIBRARY)) {
     throw new Error(`Unknown animation preset: ${source.preset}`);
   }
+  if (typeof source.createModifier !== 'function') {
+    throw new Error('Animation script must define createModifier({ dyno, handles })');
+  }
   const preset = source.preset ?? 'explosion';
-  const presetDefaults = PRESET_LIBRARY[preset];
+  const presetDefaults = PRESET_DEFAULTS[preset];
   return {
+    createModifier: source.createModifier,
     duration: round(clamp(Number(source.duration) || presetDefaults.duration, 0.1, 120), 3),
     loop: source.loop !== false,
     name: String(source.name || DEFAULT_ANIMATION_SCRIPT_NAME).trim() || DEFAULT_ANIMATION_SCRIPT_NAME,
@@ -65,30 +166,41 @@ export function parseAnimationScript(text) {
     preset,
     version: 1,
   };
+};
+
+export function parseAnimationScript(text) {
+  return normalizeAnimationConfig(evaluateAnimationScriptSource(text));
 }
 
 export function serializeAnimationScript(config) {
-  const parsed = typeof config === 'string' ? parseAnimationScript(config) : parseAnimationScript(JSON.stringify(config));
-  return JSON.stringify({
-    version: parsed.version,
-    name: parsed.name,
-    preset: parsed.preset,
-    duration: parsed.duration,
-    loop: parsed.loop,
-    origin: [parsed.origin.x, parsed.origin.y, parsed.origin.z],
-    params: parsed.params,
-  }, null, 2);
+  const parsed = typeof config === 'string' ? parseAnimationScript(config) : normalizeAnimationConfig(config);
+  const originSource = indentBlock(JSON.stringify([parsed.origin.x, parsed.origin.y, parsed.origin.z], null, 2));
+  const paramsSource = indentBlock(JSON.stringify(parsed.params, null, 2));
+  const modifierSource = indentBlock(parsed.createModifier.toString());
+  return `({
+  version: ${parsed.version},
+  name: ${JSON.stringify(parsed.name)},
+  preset: ${JSON.stringify(parsed.preset)},
+  duration: ${parsed.duration},
+  loop: ${parsed.loop},
+  origin: ${originSource},
+  params: ${paramsSource},
+  createModifier: ${modifierSource},
+})`;
+}
+
+export function createAnimationModifierFromScript(script, { dyno, handles }) {
+  if (!script) {
+    return null;
+  }
+  return script.createModifier({ dyno, handles });
 }
 
 export function getAnimationPresetScriptText(name) {
-  if (!(name in PRESET_LIBRARY)) {
+  if (!(name in PRESET_SCRIPT_LIBRARY)) {
     throw new Error(`Unknown animation preset: ${name}`);
   }
-  return serializeAnimationScript({
-    name: DEFAULT_ANIMATION_SCRIPT_NAME,
-    preset: name,
-    ...PRESET_LIBRARY[name],
-  });
+  return PRESET_SCRIPT_LIBRARY[name];
 }
 
 export function buildAnimationDownloadName(name) {
@@ -96,7 +208,7 @@ export function buildAnimationDownloadName(name) {
     .toLowerCase()
     .replace(/[^a-z0-9]+/g, '-')
     .replace(/^-+|-+$/g, '') || 'animation';
-  return `${normalized}.json`;
+  return `${normalized}.js`;
 }
 
 export function createDefaultAnimationPlaybackState(script) {
