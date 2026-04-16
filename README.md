@@ -1,6 +1,6 @@
 # 3DGS Viewer Spark Test
 
-Static 3D Gaussian Splatting viewer built with Spark 2.0 Preview and Three.js.
+Static 3D Gaussian Splatting viewer built with the Spark 2.0 release and Three.js.
 
 This project is intended as a place to test 3DGS linear workflow behavior, color grading, Lighting and related look-development workflows.
 There are currently very few web-based tools that focus on this kind of testing.
