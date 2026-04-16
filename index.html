@@ -168,7 +168,6 @@
               <button class="toolbar-button toolbar-button-primary" type="button" id="animation-play-button" title="Play the current animation script.">Play</button>
               <button class="toolbar-button" type="button" id="animation-pause-button" title="Pause animation playback.">Pause</button>
               <button class="toolbar-button" type="button" id="animation-reset-button" title="Return animation time to the start.">Reset</button>
-              <button class="toolbar-button" type="button" id="animation-apply-button" title="Apply the script from the Animation tab to the loaded splats.">Apply Script</button>
             </div>
             <label class="timeline-loop-toggle" title="Loop playback when the timeline reaches the end.">
               <input id="animation-loop-checkbox" type="checkbox" checked>
@@ -563,16 +562,19 @@
                 </div>
                 <label class="field" title="Choose a built-in animation preset script.">
                   <span>Preset</span>
-                  <select id="animation-preset-select">
-                    <option value="explosion" selected>Splat Explosion</option>
-                  </select>
+                  <div class="field-inline field-inline-actions">
+                    <select id="animation-preset-select">
+                      <option value="explosion" selected>Splat Explosion</option>
+                    </select>
+                    <button class="toolbar-button" type="button" id="animation-load-preset-button" title="Load the selected preset into the script editor.">Load Preset</button>
+                  </div>
                 </label>
                 <div class="button-pair">
-                  <button class="toolbar-button" type="button" id="animation-load-preset-button" title="Replace the current script with the selected preset.">Load Preset</button>
-                  <button class="toolbar-button" type="button" id="animation-save-button" title="Download the current script as a JSON file.">Save Script</button>
+                  <button class="toolbar-button" type="button" id="animation-open-button" title="Load an animation script JSON file from this device.">Load Script</button>
+                  <button class="toolbar-button" type="button" id="animation-save-button" title="Save the currently displayed script to this device.">Save Script</button>
                 </div>
                 <div class="button-pair">
-                  <button class="toolbar-button" type="button" id="animation-open-button" title="Load an animation script JSON file.">Open Script</button>
+                  <button class="toolbar-button toolbar-button-primary" type="button" id="animation-apply-button" title="Apply the script currently shown in the editor to the loaded splats.">Apply Script</button>
                   <button class="toolbar-button" type="button" id="animation-copy-default-button" title="Clear the current animation script so no animation is applied.">No Script</button>
                 </div>
               </div>
