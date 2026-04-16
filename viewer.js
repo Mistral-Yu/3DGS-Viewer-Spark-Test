@@ -3,6 +3,12 @@ import { OrbitControls } from "./vendor/three/examples/jsm/controls/OrbitControl
 import { TransformControls } from "./vendor/three/examples/jsm/controls/TransformControls.js";
 import * as Spark from "./vendor/spark/spark.module.js";
 import { computeLayoutMode, computePanelWidths, computeShellSize, computeUiScale } from "./viewer-layout.mjs";
+import {
+  DEFAULT_ANIMATION_SCRIPT_NAME,
+  buildAnimationDownloadName,
+  getAnimationPresetScriptText,
+  parseAnimationScript,
+} from "./viewer-animation.mjs";
 import { DEFAULT_LIGHT_COLOR, DEFAULT_LIGHT_HELPER_SCALE, clampLightColor, createDefaultLightState } from "./viewer-lighting.mjs";
 
 function startSparkViewer() {
@@ -64,6 +70,18 @@ function startSparkViewer() {
       ply: "Uncompressed PLY",
       splat: "Packed SPLAT",
       spz: "SPZ compressed",
+    };
+    const ANIMATION_PRESET_LABELS = {
+      diffusion: "Origin Diffusion",
+      explosion: "Splat Explosion",
+    };
+    const ANIMATION_PARAM_LIMITS = {
+      distanceScale: { min: 0, max: 6 },
+      opacityPower: { min: 0.1, max: 4 },
+      scaleInfluence: { min: 0, max: 4 },
+      speed: { min: 0.05, max: 8 },
+      strength: { min: 0, max: 12 },
+      swirl: { min: 0, max: 6 },
     };
     const dom = {
       backgroundSelect: document.getElementById("background-select"),
@@ -136,6 +154,21 @@ function startSparkViewer() {
       lensChip: document.getElementById("lens-chip"),
       addPointLightButton: document.getElementById("add-point-light-button"),
       addPrimitiveButton: document.getElementById("add-primitive-button"),
+      animationApplyButton: document.getElementById("animation-apply-button"),
+      animationCopyDefaultButton: document.getElementById("animation-copy-default-button"),
+      animationFileInput: document.getElementById("animation-file-input"),
+      animationLoadPresetButton: document.getElementById("animation-load-preset-button"),
+      animationLoopCheckbox: document.getElementById("animation-loop-checkbox"),
+      animationOpenButton: document.getElementById("animation-open-button"),
+      animationPauseButton: document.getElementById("animation-pause-button"),
+      animationPlayButton: document.getElementById("animation-play-button"),
+      animationPresetSelect: document.getElementById("animation-preset-select"),
+      animationResetButton: document.getElementById("animation-reset-button"),
+      animationSaveButton: document.getElementById("animation-save-button"),
+      animationScriptEditor: document.getElementById("animation-script-editor"),
+      animationScriptStatus: document.getElementById("animation-script-status"),
+      animationTimeLabel: document.getElementById("animation-time-label"),
+      animationTimeRange: document.getElementById("animation-time-range"),
       primitiveSelect: document.getElementById("primitive-select"),
       modeButtons: Array.from(document.querySelectorAll("[data-mode]")),
       modeDescription: document.getElementById("mode-description"),
@@ -188,21 +221,33 @@ function startSparkViewer() {
 
     const {
       Gsplat,
+      abs,
       add,
       clamp,
       combineGsplat,
+      cos,
+      cross,
       div,
       dot = dyno.Dot,
       dynoBlock,
       dynoConst,
       dynoFloat,
       dynoVec3,
+      floor,
+      fract,
       gsplatNormal,
       length,
       max = dyno.Max,
+      min = dyno.Min,
+      mix,
       mul,
+      normalize,
+      pow,
+      sign,
+      sin,
       split,
       splitGsplat,
+      step,
       sub,
     } = dyno;
 
@@ -444,6 +489,110 @@ function startSparkViewer() {
           }),
         };
       });
+
+    const createDiffusionAnimationModifier = ({
+      distanceScale,
+      epsilon,
+      epsilonVector,
+      opacityPower,
+      origin,
+      scaleInfluence,
+      speed,
+      strength,
+      swirl,
+      time,
+      up,
+    }) =>
+      dynoBlock({ gsplat: Gsplat }, { gsplat: Gsplat }, ({ gsplat }) => {
+        if (!gsplat) {
+          throw new Error("No gsplat input");
+        }
+        const outputs = splitGsplat(gsplat).outputs;
+        const floatZero = dynoConst("float", 0);
+        const floatOne = dynoConst("float", 1);
+        const swirlWave = dynoConst("float", 3.1);
+        const relative = sub(outputs.center, origin);
+        const distanceFromOrigin = max(length(relative), epsilon);
+        const direction = normalize(add(relative, epsilonVector));
+        const tangent = normalize(add(cross(direction, up), epsilonVector));
+        const scaleMagnitude = max(length(outputs.scales), epsilon);
+        const scaleFactor = add(floatOne, mul(scaleMagnitude, scaleInfluence));
+        const travel = sub(mul(mul(time, speed), scaleFactor), mul(distanceFromOrigin, distanceScale));
+        const phase = clamp(travel, floatZero, floatOne);
+        const opacity = pow(phase, opacityPower);
+        const radialOffset = mul(direction, mul(strength, mul(phase, scaleFactor)));
+        const swirlOffset = mul(
+          tangent,
+          mul(
+            sin(add(mul(distanceFromOrigin, swirlWave), mul(time, add(swirl, dynoConst("float", 0.25))))),
+            mul(strength, mul(swirl, phase)),
+          ),
+        );
+        return {
+          gsplat: combineGsplat({
+            gsplat,
+            center: add(outputs.center, add(radialOffset, swirlOffset)),
+            opacity,
+          }),
+        };
+      });
+
+    const createExplosionAnimationModifier = ({
+      distanceScale,
+      epsilon,
+      epsilonVector,
+      opacityPower,
+      origin,
+      scaleInfluence,
+      speed,
+      strength,
+      swirl,
+      time,
+      up,
+    }) =>
+      dynoBlock({ gsplat: Gsplat }, { gsplat: Gsplat }, ({ gsplat }) => {
+        if (!gsplat) {
+          throw new Error("No gsplat input");
+        }
+        const outputs = splitGsplat(gsplat).outputs;
+        const floatZero = dynoConst("float", 0);
+        const floatOne = dynoConst("float", 1);
+        const burstWave = dynoConst("float", 8.0);
+        const relative = sub(outputs.center, origin);
+        const distanceFromOrigin = max(length(relative), epsilon);
+        const direction = normalize(add(relative, epsilonVector));
+        const tangent = normalize(add(cross(direction, up), epsilonVector));
+        const scaleMagnitude = max(length(outputs.scales), epsilon);
+        const scaleFactor = add(floatOne, mul(scaleMagnitude, scaleInfluence));
+        const travel = sub(mul(mul(time, speed), scaleFactor), mul(distanceFromOrigin, distanceScale));
+        const burst = clamp(travel, floatZero, floatOne);
+        const fade = pow(sub(floatOne, burst), opacityPower);
+        const radialOffset = mul(direction, mul(strength, mul(add(burst, mul(burst, burst)), scaleFactor)));
+        const swirlOffset = mul(
+          tangent,
+          mul(
+            cos(add(mul(distanceFromOrigin, burstWave), mul(time, add(swirl, dynoConst("float", 1.5))))),
+            mul(strength, mul(swirl, burst)),
+          ),
+        );
+        return {
+          gsplat: combineGsplat({
+            gsplat,
+            center: add(outputs.center, add(radialOffset, swirlOffset)),
+            opacity: clamp(fade, floatZero, floatOne),
+          }),
+        };
+      });
+
+    const createAnimationModifierFromScript = (script, handles) => {
+      if (!script) {
+        return null;
+      }
+      if (script.preset === "explosion") {
+        return createExplosionAnimationModifier(handles);
+      }
+      return createDiffusionAnimationModifier(handles);
+    };
 
     const getFileExtension = (name) => (name.split(".").pop() || "").toLowerCase();
 
@@ -1122,6 +1271,8 @@ function startSparkViewer() {
         this.activeRenderUntil = 0;
         this.deferredPreviewHandle = 0;
         this.interactionFinalizeHandle = 0;
+        this.animationPlaybackHandle = 0;
+        this.lastAnimationTickAt = 0;
         this.sparkSceneDirty = false;
         this.sparkSceneUpdateQueued = false;
         this.sparkSceneUpdatePromise = null;
@@ -1143,6 +1294,21 @@ function startSparkViewer() {
           scaleFactor: dynoFloat(1, "viewerPositionScale"),
           span: dynoVec3(new THREE.Vector3(1, 1, 1), "viewerPositionSpan"),
         };
+        this.animationModifierHandles = {
+          distanceScale: dynoFloat(1.4, "viewerAnimationDistanceScale"),
+          epsilon: dynoFloat(0.0001, "viewerAnimationEpsilon"),
+          epsilonVector: dynoVec3(new THREE.Vector3(0.0001, 0.0001, 0.0001), "viewerAnimationEpsilonVector"),
+          opacityPower: dynoFloat(1.35, "viewerAnimationOpacityPower"),
+          origin: dynoVec3(new THREE.Vector3(), "viewerAnimationOrigin"),
+          scaleInfluence: dynoFloat(1.2, "viewerAnimationScaleInfluence"),
+          speed: dynoFloat(1, "viewerAnimationSpeed"),
+          strength: dynoFloat(1.8, "viewerAnimationStrength"),
+          swirl: dynoFloat(0.18, "viewerAnimationSwirl"),
+          time: dynoFloat(0, "viewerAnimationTime"),
+          up: dynoVec3(new THREE.Vector3(0, 1, 0.35).normalize(), "viewerAnimationUp"),
+        };
+        this.activeAnimationModifier = null;
+        this.activeAnimationScript = parseAnimationScript(getAnimationPresetScriptText("diffusion"));
         this.baseObjectModifier = undefined;
         this.baseWorldModifier = undefined;
         this.loadedShDegree = 3;
@@ -1160,6 +1326,10 @@ function startSparkViewer() {
           gridScaleMode: "auto",
           gridScaleValue: 1,
           inspectorTab: "scene",
+          animationLoop: this.activeAnimationScript.loop,
+          animationPlaying: false,
+          animationTime: 0,
+          animationDuration: this.activeAnimationScript.duration,
           lightHelperScale: DEFAULT_LIGHT_HELPER_SCALE,
           lightIntensity: 20,
           lightR: DEFAULT_LIGHT_COLOR.r,
@@ -1221,6 +1391,9 @@ function startSparkViewer() {
         this.syncGridControls();
         this.syncSelectedLightControls(true);
         this.syncLightList();
+        this.syncAnimationEditor();
+        this.syncAnimationControls(true);
+        this.applyAnimationScript(false);
         if (this.dom.colorspaceChip) {
           this.dom.colorspaceChip.textContent = "Display sRGB";
         }
@@ -1389,6 +1562,31 @@ function startSparkViewer() {
         this.dom.inspectorTabButtons.forEach((button) => {
           button.addEventListener("click", () => this.setInspectorTab(button.dataset.inspectorTab || "scene"));
         });
+        this.dom.animationLoopCheckbox?.addEventListener("change", () => {
+          this.state.animationLoop = Boolean(this.dom.animationLoopCheckbox.checked);
+          if (this.activeAnimationScript) {
+            this.activeAnimationScript.loop = this.state.animationLoop;
+            this.syncAnimationEditor();
+          }
+        });
+        this.dom.animationLoadPresetButton?.addEventListener("click", () => this.loadAnimationPreset(this.dom.animationPresetSelect?.value || "diffusion"));
+        this.dom.animationCopyDefaultButton?.addEventListener("click", () => this.loadAnimationPreset("diffusion"));
+        this.dom.animationApplyButton?.addEventListener("click", () => this.applyAnimationScript(true));
+        this.dom.animationPlayButton?.addEventListener("click", () => this.playAnimation());
+        this.dom.animationPauseButton?.addEventListener("click", () => this.pauseAnimation());
+        this.dom.animationResetButton?.addEventListener("click", () => this.resetAnimation());
+        this.dom.animationOpenButton?.addEventListener("click", () => this.dom.animationFileInput?.click());
+        this.dom.animationSaveButton?.addEventListener("click", () => this.saveAnimationScript());
+        this.dom.animationFileInput?.addEventListener("change", async (event) => {
+          const [file] = Array.from(event.target.files || []);
+          if (!file) {
+            return;
+          }
+          await this.loadAnimationScriptFile(file);
+          event.target.value = "";
+        });
+        this.dom.animationTimeRange?.addEventListener("input", () => this.setAnimationTimeFromUi(false));
+        this.dom.animationTimeRange?.addEventListener("change", () => this.setAnimationTimeFromUi(true));
         this.bindNumberPair({
           input: this.dom.sceneLimitInput,
           range: this.dom.sceneLimitRange,
@@ -4808,6 +5006,7 @@ function startSparkViewer() {
         const frameStartedAt = performance.now();
         const delta = Math.min(this.clock.getDelta(), 0.05);
         let keepAnimating = false;
+        const animationActive = this.stepAnimation(delta);
         const movedByKeys = Boolean(this.firstPerson.update(delta));
         if (movedByKeys && this.activeMode === "orbit") {
           this.orbitControls.target.add(this.firstPerson.lastMovementDelta);
@@ -4821,7 +5020,7 @@ function startSparkViewer() {
         } else {
           keepAnimating = movedByKeys;
         }
-        keepAnimating = keepAnimating || movedByKeys;
+        keepAnimating = keepAnimating || movedByKeys || animationActive;
         const timedRenderActive = this.isTimedRenderActive(frameStartedAt);
         const scheduledReady = !this.scheduledRenderAt || frameStartedAt >= this.scheduledRenderAt;
         const shouldDraw = (this.renderInvalidated && scheduledReady)
@@ -4947,8 +5146,15 @@ function startSparkViewer() {
           const itemMode = item.id === this.selectedSceneItemId
             ? (item.settings.renderMode || "beauty")
             : "beauty";
+          const objectModifiers = [];
+          if (item.baseObjectModifier) {
+            objectModifiers.push(item.baseObjectModifier);
+          }
+          if (this.activeAnimationModifier) {
+            objectModifiers.push(this.activeAnimationModifier);
+          }
           item.mesh.enableWorldToView = false;
-          item.mesh.objectModifiers = item.baseObjectModifier ? [item.baseObjectModifier] : undefined;
+          item.mesh.objectModifiers = objectModifiers.length ? objectModifiers : undefined;
           item.mesh.worldModifiers = item.baseWorldModifier ? [item.baseWorldModifier] : undefined;
           item.mesh.updateMatrixWorld(true);
           item.mesh.context?.transform?.updateFromMatrix(item.mesh.matrixWorld);
@@ -5165,8 +5371,209 @@ function startSparkViewer() {
         this.updateNormalizeFieldState();
       }
 
+      syncAnimationEditor() {
+        if (this.dom.animationScriptEditor) {
+          this.dom.animationScriptEditor.value = JSON.stringify({
+            version: 1,
+            name: this.activeAnimationScript.name,
+            preset: this.activeAnimationScript.preset,
+            duration: this.activeAnimationScript.duration,
+            loop: this.activeAnimationScript.loop,
+            origin: [
+              this.activeAnimationScript.origin.x,
+              this.activeAnimationScript.origin.y,
+              this.activeAnimationScript.origin.z,
+            ],
+            params: this.activeAnimationScript.params,
+          }, null, 2);
+        }
+        if (this.dom.animationPresetSelect) {
+          this.dom.animationPresetSelect.value = this.activeAnimationScript.preset;
+        }
+        if (this.dom.animationScriptStatus) {
+          this.dom.animationScriptStatus.textContent = `${this.activeAnimationScript.name} is ready. Apply the script, then use the timeline below the viewer.`;
+        }
+      }
+
+      syncAnimationControls(syncSlider = true) {
+        const duration = Math.max(this.state.animationDuration || this.activeAnimationScript?.duration || 1, 0.1);
+        this.state.animationDuration = duration;
+        if (this.dom.animationTimeRange) {
+          this.dom.animationTimeRange.max = String(duration);
+          if (syncSlider) {
+            this.dom.animationTimeRange.value = String(Math.min(Math.max(this.state.animationTime, 0), duration));
+          }
+        }
+        if (this.dom.animationTimeLabel) {
+          this.dom.animationTimeLabel.textContent = `${this.state.animationTime.toFixed(2)}s / ${duration.toFixed(2)}s`;
+        }
+        if (this.dom.animationLoopCheckbox) {
+          this.dom.animationLoopCheckbox.checked = Boolean(this.state.animationLoop);
+        }
+        if (this.dom.animationPlayButton) {
+          this.dom.animationPlayButton.classList.toggle("is-active", this.state.animationPlaying);
+        }
+        if (this.dom.animationPauseButton) {
+          this.dom.animationPauseButton.classList.toggle("is-active", !this.state.animationPlaying);
+        }
+      }
+
+      applyActiveAnimationUniforms() {
+        if (!this.activeAnimationScript) {
+          return;
+        }
+        const { origin, params } = this.activeAnimationScript;
+        this.animationModifierHandles.origin.value.set(origin.x, origin.y, origin.z);
+        this.animationModifierHandles.distanceScale.value = params.distanceScale;
+        this.animationModifierHandles.opacityPower.value = params.opacityPower;
+        this.animationModifierHandles.scaleInfluence.value = params.scaleInfluence;
+        this.animationModifierHandles.speed.value = params.speed;
+        this.animationModifierHandles.strength.value = params.strength;
+        this.animationModifierHandles.swirl.value = params.swirl;
+        this.animationModifierHandles.time.value = this.state.animationTime;
+      }
+
+      loadAnimationPreset(name) {
+        try {
+          this.activeAnimationScript = parseAnimationScript(getAnimationPresetScriptText(name));
+          this.state.animationLoop = this.activeAnimationScript.loop;
+          this.state.animationDuration = this.activeAnimationScript.duration;
+          this.state.animationTime = 0;
+          this.syncAnimationEditor();
+          this.syncAnimationControls(true);
+          this.applyAnimationScript(true);
+        } catch (error) {
+          this.updateStatus(error instanceof Error ? error.message : "Failed to load animation preset");
+        }
+      }
+
+      applyAnimationScript(announce = true) {
+        try {
+          const text = this.dom.animationScriptEditor?.value || getAnimationPresetScriptText("diffusion");
+          this.activeAnimationScript = parseAnimationScript(text);
+          this.state.animationLoop = this.activeAnimationScript.loop;
+          this.state.animationDuration = this.activeAnimationScript.duration;
+          this.state.animationTime = Math.min(this.state.animationTime, this.state.animationDuration);
+          this.applyActiveAnimationUniforms();
+          this.activeAnimationModifier = createAnimationModifierFromScript(this.activeAnimationScript, this.animationModifierHandles);
+          this.syncAnimationEditor();
+          this.syncAnimationControls(true);
+          this.applyRenderMode(false);
+          this.forceVisualRefresh(3);
+          if (announce) {
+            this.updateStatus(`Applied ${this.activeAnimationScript.name}`);
+            this.updateRenderChip(`${ANIMATION_PRESET_LABELS[this.activeAnimationScript.preset] || "Animation"} ready`);
+          }
+        } catch (error) {
+          this.activeAnimationModifier = null;
+          this.state.animationPlaying = false;
+          this.applyRenderMode(false);
+          this.forceVisualRefresh(2);
+          this.updateStatus(error instanceof Error ? error.message : "Animation script parse failed");
+          if (this.dom.animationScriptStatus) {
+            this.dom.animationScriptStatus.textContent = error instanceof Error ? error.message : "Animation script parse failed";
+          }
+        }
+      }
+
+      stepAnimation(delta) {
+        if (!this.activeAnimationModifier) {
+          return false;
+        }
+        if (!this.state.animationPlaying) {
+          this.animationModifierHandles.time.value = this.state.animationTime;
+          return this.state.animationTime > 0;
+        }
+        const duration = Math.max(this.state.animationDuration || 0.1, 0.1);
+        let nextTime = this.state.animationTime + Math.max(delta, 0);
+        if (nextTime >= duration) {
+          if (this.state.animationLoop) {
+            nextTime %= duration;
+          } else {
+            nextTime = duration;
+            this.state.animationPlaying = false;
+          }
+        }
+        this.state.animationTime = nextTime;
+        this.animationModifierHandles.time.value = nextTime;
+        this.syncAnimationControls(true);
+        this.renderInvalidated = true;
+        if (!this.state.animationPlaying) {
+          this.updateStatus(`Paused ${this.activeAnimationScript.name}`);
+        }
+        return this.state.animationPlaying || nextTime > 0;
+      }
+
+      playAnimation() {
+        if (!this.activeAnimationModifier) {
+          this.applyAnimationScript(false);
+        }
+        if (!this.activeAnimationModifier) {
+          return;
+        }
+        this.state.animationPlaying = true;
+        this.lastAnimationTickAt = performance.now();
+        this.markRenderActivity(10_000);
+        this.forceVisualRefresh(2);
+        this.syncAnimationControls(true);
+        this.updateStatus(`Playing ${this.activeAnimationScript.name}`);
+      }
+
+      pauseAnimation() {
+        this.state.animationPlaying = false;
+        this.syncAnimationControls(true);
+        this.updateStatus(`Paused ${this.activeAnimationScript.name}`);
+      }
+
+      resetAnimation() {
+        this.pauseAnimation();
+        this.state.animationTime = 0;
+        this.animationModifierHandles.time.value = 0;
+        this.syncAnimationControls(true);
+        this.forceVisualRefresh(2);
+        this.updateStatus(`Reset ${this.activeAnimationScript.name}`);
+      }
+
+      setAnimationTimeFromUi(commit = false) {
+        if (!this.dom.animationTimeRange) {
+          return;
+        }
+        const duration = Math.max(this.state.animationDuration || 0.1, 0.1);
+        this.state.animationTime = THREE.MathUtils.clamp(Number(this.dom.animationTimeRange.value) || 0, 0, duration);
+        this.animationModifierHandles.time.value = this.state.animationTime;
+        if (commit) {
+          this.state.animationPlaying = false;
+        }
+        this.syncAnimationControls(true);
+        this.forceVisualRefresh(commit ? 3 : 1);
+      }
+
+      async loadAnimationScriptFile(file) {
+        try {
+          const text = await file.text();
+          this.dom.animationScriptEditor.value = text;
+          this.applyAnimationScript(true);
+        } catch (error) {
+          const message = error instanceof Error ? error.message : "Failed to read animation script";
+          this.updateStatus(message);
+          if (this.dom.animationScriptStatus) {
+            this.dom.animationScriptStatus.textContent = message;
+          }
+        }
+      }
+
+      saveAnimationScript() {
+        const blob = new Blob([this.dom.animationScriptEditor?.value || ""], { type: "application/json;charset=utf-8" });
+        const link = document.createElement("a");
+        link.href = URL.createObjectURL(blob);
+        link.download = buildAnimationDownloadName(this.activeAnimationScript?.name || DEFAULT_ANIMATION_SCRIPT_NAME);
+        link.click();
+        window.setTimeout(() => URL.revokeObjectURL(link.href), 0);
+        this.updateStatus(`Saved ${link.download}`);
+      }
+
       setInspectorTab(tab) {
-        const nextTab = ["scene", "color", "light", "info", "export"].includes(tab) ? tab : "scene";
+        const nextTab = ["scene", "color", "light", "animation", "info", "export"].includes(tab) ? tab : "scene";
         this.state.inspectorTab = nextTab;
         this.syncInspectorTabs();
         const label = nextTab === "scene"

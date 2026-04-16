@@ -132,6 +132,7 @@
       </aside>
 
       <section class="viewer-panel">
+        <div class="viewer-stage-shell">
         <div class="viewer-stage" id="viewer-stage">
           <div class="viewer-overlay viewer-empty" id="empty-state">
             <p class="empty-kicker">Direct Open Ready</p>
@@ -161,6 +162,25 @@
             </div>
           </div>
         </div>
+        <section class="timeline-panel" aria-label="Animation timeline">
+          <div class="timeline-toolbar">
+            <div class="button-pair button-pair-timeline">
+              <button class="toolbar-button toolbar-button-primary" type="button" id="animation-play-button" title="Play the current animation script.">Play</button>
+              <button class="toolbar-button" type="button" id="animation-pause-button" title="Pause animation playback.">Pause</button>
+              <button class="toolbar-button" type="button" id="animation-reset-button" title="Return animation time to the start.">Reset</button>
+              <button class="toolbar-button" type="button" id="animation-apply-button" title="Apply the script from the Animation tab to the loaded splats.">Apply Script</button>
+            </div>
+            <label class="timeline-loop-toggle" title="Loop playback when the timeline reaches the end.">
+              <input id="animation-loop-checkbox" type="checkbox" checked>
+              <span>Loop</span>
+            </label>
+          </div>
+          <div class="timeline-scrubber-row">
+            <span class="timeline-time" id="animation-time-label">0.00s / 6.00s</span>
+            <input id="animation-time-range" type="range" min="0" max="6" step="0.01" value="0">
+          </div>
+        </section>
+        </div>
       </section>
 
       <aside class="panel panel-right">
@@ -168,7 +188,7 @@
           <div class="section-heading">
             <p class="section-label">Inspector</p>
             <div class="section-title-row">
-              <h2>Splats / Color / Light / Info / Export</h2>
+              <h2>Splats / Color / Light / Animation / Info / Export</h2>
               <span
                 class="hint-badge"
                 title="Switch tabs to manage scene items, apply color grading, inspect metadata, or export splats."
@@ -180,6 +200,7 @@
             <button class="segmented-button is-active" type="button" id="tab-scene-button" data-inspector-tab="scene" role="tab" aria-selected="true" title="Splat item visibility, selection, transforms, and render controls.">Splats</button>
             <button class="segmented-button" type="button" id="tab-color-button" data-inspector-tab="color" role="tab" aria-selected="false" title="Linear color grading controls.">Color</button>
             <button class="segmented-button" type="button" id="tab-light-button" data-inspector-tab="light" role="tab" aria-selected="false" title="Manage point lights that relight visible splats in beauty mode.">Light</button>
+            <button class="segmented-button" type="button" id="tab-animation-button" data-inspector-tab="animation" role="tab" aria-selected="false" title="Load, edit, save, and play per-splat animation scripts.">Animation</button>
             <button class="segmented-button" type="button" id="tab-info-button" data-inspector-tab="info" role="tab" aria-selected="false" title="Loaded splat metadata and load progress.">Info</button>
             <button class="segmented-button" type="button" id="tab-export-button" data-inspector-tab="export" role="tab" aria-selected="false" title="Choose which splats to save.">Export</button>
           </div>
@@ -534,6 +555,42 @@
               </div>
             </section>
 
+            <section class="inspector-panel" id="inspector-animation" data-inspector-panel="animation" role="tabpanel" hidden>
+              <div class="field-stack">
+                <div class="section-heading section-heading-sub">
+                  <p class="section-label">Animation</p>
+                  <h2>Script Presets</h2>
+                </div>
+                <label class="field" title="Choose a built-in animation preset script.">
+                  <span>Preset</span>
+                  <select id="animation-preset-select">
+                    <option value="diffusion" selected>Origin Diffusion</option>
+                    <option value="explosion">Splat Explosion</option>
+                  </select>
+                </label>
+                <div class="button-pair">
+                  <button class="toolbar-button" type="button" id="animation-load-preset-button" title="Replace the current script with the selected preset.">Load Preset</button>
+                  <button class="toolbar-button" type="button" id="animation-save-button" title="Download the current script as a JSON file.">Save Script</button>
+                </div>
+                <div class="button-pair">
+                  <button class="toolbar-button" type="button" id="animation-open-button" title="Load an animation script JSON file.">Open Script</button>
+                  <button class="toolbar-button" type="button" id="animation-copy-default-button" title="Restore the default origin diffusion script.">Default Script</button>
+                </div>
+              </div>
+
+              <div class="field-stack">
+                <div class="section-heading section-heading-sub">
+                  <p class="section-label">Animation</p>
+                  <h2>Script Editor</h2>
+                </div>
+                <label class="field" title="Edit the current per-splat animation script as JSON and apply it to the loaded splats.">
+                  <span>Script JSON</span>
+                  <textarea class="script-editor" id="animation-script-editor" spellcheck="false"></textarea>
+                </label>
+                <p class="progress-label" id="animation-script-status">Origin Diffusion is loaded. Apply the script, then use the timeline below the viewer.</p>
+              </div>
+            </section>
+
             <section class="inspector-panel" id="inspector-export" data-inspector-panel="export" role="tabpanel" hidden>
               <div class="field-stack">
                 <div class="section-heading section-heading-sub">
@@ -585,5 +642,6 @@
   </div>
 
   <input id="file-input" type="file" accept=".ply,.spz,.splat,.ksplat" hidden>
+  <input id="animation-file-input" type="file" accept=".json,.txt" hidden>
 </body>
 </html>
