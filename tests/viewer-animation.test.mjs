@@ -5,6 +5,7 @@ import {
   ANIMATION_PRESET_LIBRARY,
   DEFAULT_ANIMATION_SCRIPT_NAME,
   buildAnimationDownloadName,
+  canPlayAnimation,
   createDefaultAnimationPlaybackState,
   getAnimationPresetScriptText,
   parseAnimationScript,
@@ -92,4 +93,11 @@ test('shouldRenderAnimationFrame requires an applied script that is actively pla
   assert.equal(shouldRenderAnimationFrame({ animationApplied: false, animationPlaying: true }), false);
   assert.equal(shouldRenderAnimationFrame({ animationApplied: true, animationPlaying: false }), false);
   assert.equal(shouldRenderAnimationFrame({ animationApplied: true, animationPlaying: true }), true);
+});
+
+test('canPlayAnimation requires an already applied modifier and does not auto-apply loaded scripts', () => {
+  assert.equal(canPlayAnimation({ animationApplied: false, hasModifier: false }), false);
+  assert.equal(canPlayAnimation({ animationApplied: false, hasModifier: true }), false);
+  assert.equal(canPlayAnimation({ animationApplied: true, hasModifier: false }), false);
+  assert.equal(canPlayAnimation({ animationApplied: true, hasModifier: true }), true);
 });

@@ -7,6 +7,7 @@ import {
   createAnimationModifierFromScript,
   DEFAULT_ANIMATION_SCRIPT_NAME,
   buildAnimationDownloadName,
+  canPlayAnimation,
   createDefaultAnimationPlaybackState,
   getAnimationPresetScriptText,
   parseAnimationScript,
@@ -5429,10 +5430,10 @@ function startSparkViewer() {
       }
 
       playAnimation() {
-        if (!this.activeAnimationModifier) {
-          this.applyAnimationScript(false);
-        }
-        if (!this.activeAnimationModifier || !this.state.animationApplied) {
+        if (!canPlayAnimation({
+          animationApplied: this.state.animationApplied,
+          hasModifier: Boolean(this.activeAnimationModifier),
+        })) {
           this.updateStatus("No animation script applied");
           return;
         }

@@ -224,3 +224,7 @@ export function createDefaultAnimationPlaybackState(script) {
 export function shouldRenderAnimationFrame({ animationApplied, animationPlaying }) {
   return Boolean(animationApplied && animationPlaying);
 }
+
+export function canPlayAnimation({ animationApplied, hasModifier }) {
+  return Boolean(animationApplied && hasModifier);
+}
