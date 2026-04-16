@@ -367,6 +367,11 @@ code {
   overflow: hidden;
 }
 
+.hud-chip-lod {
+  border-color: rgba(127, 240, 215, 0.24);
+  background: rgba(10, 20, 32, 0.86);
+}
+
 .hover-chip-item {
   min-width: 0;
   overflow: hidden;
@@ -679,6 +684,64 @@ code {
 
 .compact-fields .field {
   gap: 6px;
+}
+
+.tone-curve-panel {
+  gap: var(--space-3);
+}
+
+.tone-curve-editor {
+  display: grid;
+  gap: var(--space-3);
+}
+
+.tone-curve-graph {
+  width: 100%;
+  aspect-ratio: 1 / 1;
+  border: 1px solid var(--line);
+  border-radius: calc(18px * var(--ui-scale));
+  background:
+    linear-gradient(to right, rgba(255, 255, 255, 0.06) 1px, transparent 1px) 0 0 / 25% 100%,
+    linear-gradient(to top, rgba(255, 255, 255, 0.06) 1px, transparent 1px) 0 0 / 100% 25%,
+    rgba(8, 14, 22, 0.82);
+  overflow: visible;
+}
+
+.tone-curve-toolbar {
+  display: grid;
+  gap: var(--space-2);
+}
+
+.transform-row-dual {
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+}
+
+.tone-curve-point-list {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(calc(90px * var(--ui-scale)), 1fr));
+  gap: var(--space-2);
+}
+
+.tone-curve-point-button {
+  min-height: calc(34px * var(--ui-scale));
+  padding: 0 var(--space-2);
+  border: 1px solid rgba(255, 255, 255, 0.08);
+  border-radius: 12px;
+  background: rgba(12, 20, 30, 0.82);
+  color: var(--muted);
+  font-family: "IBM Plex Mono", monospace;
+  font-size: 0.72rem;
+  cursor: pointer;
+}
+
+.tone-curve-point-button.is-active {
+  border-color: rgba(127, 240, 215, 0.42);
+  background: rgba(14, 34, 44, 0.94);
+  color: var(--text);
+}
+
+.tone-curve-point-handle {
+  cursor: pointer;
 }
 
 .field {
