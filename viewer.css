@@ -9,10 +9,10 @@
   --space-4: calc(14px * var(--ui-scale));
   --space-5: calc(16px * var(--ui-scale));
   --space-6: calc(22px * var(--ui-scale));
-  --shell-width: calc(1888px * var(--ui-scale));
-  --shell-height: calc(1048px * var(--ui-scale));
-  --panel-left-width: calc(228px * var(--ui-scale));
-  --panel-right-width: calc(366px * var(--ui-scale));
+  --shell-width: calc(100vw - (2 * var(--space-1)));
+  --shell-height: calc(100vh - (2 * var(--space-1)));
+  --panel-left-width: 220px;
+  --panel-right-width: 280px;
   --bg: #04080e;
   --panel: rgba(8, 14, 22, 0.84);
   --line: rgba(150, 175, 201, 0.14);
@@ -65,10 +65,9 @@ code {
 }
 
 .app-shell {
-  width: min(var(--shell-width), calc(100dvw - (2 * var(--space-1))));
-  width: min(var(--shell-width), calc(100vw - (2 * var(--space-1))));
-  height: min(var(--shell-height), calc(100dvh - (2 * var(--space-1))));
-  height: min(var(--shell-height), calc(100vh - (2 * var(--space-1))));
+  width: var(--shell-width);
+  height: var(--shell-height);
+  min-height: var(--shell-height);
   margin: 0 auto;
   display: grid;
   grid-template-rows: auto minmax(0, 1fr);
@@ -753,33 +752,32 @@ code {
 
 @media (max-width: 1540px) {
   .workspace {
-    grid-template-columns: calc(212px * var(--ui-scale)) minmax(0, 1fr) calc(344px * var(--ui-scale));
+    grid-template-columns: var(--panel-left-width) minmax(0, 1fr) var(--panel-right-width);
   }
 }
 
-@media (max-width: 1260px) {
-  body {
-    padding: 10px;
-    overflow: auto;
-  }
+body[data-layout="compact"] {
+  padding: 10px;
+  overflow: auto;
+}
 
-  .app-shell {
-    width: min(1440px, calc(100vw - 20px));
-    height: auto;
-    min-height: calc(100vh - 20px);
-  }
+body[data-layout="compact"] .app-shell,
+body[data-layout="stacked"] .app-shell {
+  width: var(--shell-width);
+  height: auto;
+  min-height: var(--shell-height);
+}
 
-  .workspace {
-    grid-template-columns: 220px minmax(0, 1fr);
-  }
+body[data-layout="compact"] .workspace {
+  grid-template-columns: var(--panel-left-width) minmax(0, 1fr);
+}
 
-  .panel-right {
-    grid-column: span 2;
-  }
+body[data-layout="compact"] .panel-right {
+  grid-column: span 2;
+}
 
-  .viewer-stage {
-    min-height: 58vh;
-  }
+body[data-layout="compact"] .viewer-stage {
+  min-height: 58vh;
 }
 
 @media (max-width: 980px) {
@@ -797,15 +795,15 @@ code {
     width: 100%;
     justify-content: flex-start;
   }
+}
 
-  .workspace {
-    grid-template-columns: 1fr;
-  }
+body[data-layout="stacked"] .workspace {
+  grid-template-columns: 1fr;
+}
 
-  .panel-right,
-  .panel-left {
-    grid-column: auto;
-  }
+body[data-layout="stacked"] .panel-right,
+body[data-layout="stacked"] .panel-left {
+  grid-column: auto;
 }
 
 @media (max-width: 720px) {
@@ -814,8 +812,8 @@ code {
   }
 
   .app-shell {
-    width: calc(100vw - 12px);
-    min-height: calc(100vh - 12px);
+    width: var(--shell-width);
+    min-height: var(--shell-height);
   }
 
   .app-header,

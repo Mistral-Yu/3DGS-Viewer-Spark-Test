@@ -2,7 +2,8 @@ import * as THREE from "./vendor/three/three.module.js";
 import { OrbitControls } from "./vendor/three/examples/jsm/controls/OrbitControls.js";
 import { TransformControls } from "./vendor/three/examples/jsm/controls/TransformControls.js";
 import * as Spark from "./vendor/spark/spark.module.js";
-import { computeUiScale } from "./viewer-layout.mjs";
+import { computeLayoutMode, computePanelWidths, computeShellSize, computeUiScale } from "./viewer-layout.mjs";
+import { DEFAULT_LIGHT_COLOR, DEFAULT_LIGHT_HELPER_SCALE, clampLightColor, createDefaultLightState } from "./viewer-lighting.mjs";
 
 function startSparkViewer() {
     const {
@@ -32,8 +33,8 @@ function startSparkViewer() {
     const LIGHT_INTENSITY_LIMITS = { min: 0, max: 100000 };
     const LIGHT_HELPER_SCALE_LIMITS = { min: 0.1, max: 8 };
     const LIGHT_POSITION_LIMITS = { min: -100000, max: 100000 };
-    const LIGHT_COLOR = "#ffd48a";
     const LIGHT_HELPER_COLOR = "#fff1b5";
+    const LIGHT_COLOR_COMPONENT_LIMITS = { min: 0, max: 1 };
     const LIGHT_OCCLUDER_LIMIT = 96;
     const TRANSLATE_LIMITS = { min: -100000, max: 100000 };
     const FPS_KEYS = new Set(["KeyW", "KeyA", "KeyS", "KeyD", "KeyQ", "KeyE", "ShiftLeft", "ShiftRight"]);
@@ -126,6 +127,9 @@ function startSparkViewer() {
       lightIntensityRange: document.getElementById("light-intensity-range"),
       lightList: document.getElementById("light-list"),
       lightName: document.getElementById("light-name"),
+      lightRInput: document.getElementById("light-r-input"),
+      lightGInput: document.getElementById("light-g-input"),
+      lightBInput: document.getElementById("light-b-input"),
       lightXInput: document.getElementById("light-x-input"),
       lightYInput: document.getElementById("light-y-input"),
       lightZInput: document.getElementById("light-z-input"),
@@ -401,6 +405,9 @@ function startSparkViewer() {
       });
 
     const createPointLightColorModifier = ({
+      lightColorB,
+      lightColorG,
+      lightColorR,
       lightIntensities,
       lightPositions,
       lightCount,
@@ -411,20 +418,31 @@ function startSparkViewer() {
         }
         const outputs = splitGsplat(gsplat).outputs;
         const center = outputs.center;
-        let rgb = outputs.rgb;
+        const { x: rgbR, y: rgbG, z: rgbB } = split(outputs.rgb).outputs;
         const floatZero = dynoConst("float", 0);
         const floatOne = dynoConst("float", 1);
         const floatEps = dynoConst("float", 0.0001);
-        let lightBoost = floatZero;
+        let lightBoostR = floatZero;
+        let lightBoostG = floatZero;
+        let lightBoostB = floatZero;
         for (let lightIndex = 0; lightIndex < lightCount; lightIndex += 1) {
           const lightPosition = lightPositions[lightIndex];
           const lightIntensity = max(lightIntensities[lightIndex], floatZero);
           const lightVector = sub(center, lightPosition);
           const lightDistanceSq = max(dot(lightVector, lightVector), floatEps);
-          lightBoost = add(lightBoost, div(lightIntensity, lightDistanceSq));
+          const lightStrength = div(lightIntensity, lightDistanceSq);
+          lightBoostR = add(lightBoostR, mul(lightColorR[lightIndex], lightStrength));
+          lightBoostG = add(lightBoostG, mul(lightColorG[lightIndex], lightStrength));
+          lightBoostB = add(lightBoostB, mul(lightColorB[lightIndex], lightStrength));
         }
-        rgb = mul(rgb, add(floatOne, lightBoost));
-        return { gsplat: combineGsplat({ gsplat, rgb }) };
+        return {
+          gsplat: combineGsplat({
+            gsplat,
+            r: mul(rgbR, add(floatOne, lightBoostR)),
+            g: mul(rgbG, add(floatOne, lightBoostG)),
+            b: mul(rgbB, add(floatOne, lightBoostB)),
+          }),
+        };
       });
 
     const getFileExtension = (name) => (name.split(".").pop() || "").toLowerCase();
@@ -1074,6 +1092,9 @@ function startSparkViewer() {
         this.activeLightCount = 0;
         this.activeOccluderCount = 0;
         this.lightHandles = {
+          colorB: [],
+          colorG: [],
+          colorR: [],
           intensities: [],
           occluderOpacities: [],
           occluderPositions: [],
@@ -1139,8 +1160,11 @@ function startSparkViewer() {
           gridScaleMode: "auto",
           gridScaleValue: 1,
           inspectorTab: "scene",
-          lightHelperScale: 1,
+          lightHelperScale: DEFAULT_LIGHT_HELPER_SCALE,
           lightIntensity: 20,
+          lightR: DEFAULT_LIGHT_COLOR.r,
+          lightG: DEFAULT_LIGHT_COLOR.g,
+          lightB: DEFAULT_LIGHT_COLOR.b,
           lightX: 0,
           lightY: 0,
           lightZ: 0,
@@ -1449,6 +1473,9 @@ function startSparkViewer() {
 
         this.dom.resetRotationButton.addEventListener("click", () => this.resetTransform());
         [
+          this.dom.lightRInput,
+          this.dom.lightGInput,
+          this.dom.lightBInput,
           this.dom.lightXInput,
           this.dom.lightYInput,
           this.dom.lightZInput,
@@ -1463,12 +1490,30 @@ function startSparkViewer() {
           if (!input) {
             return;
           }
-          if (input === this.dom.lightXInput || input === this.dom.lightYInput || input === this.dom.lightZInput) {
+          if (
+            input === this.dom.lightXInput
+            || input === this.dom.lightYInput
+            || input === this.dom.lightZInput
+          ) {
             input.addEventListener("input", () => this.applySelectedLightPosition(false));
             input.addEventListener("blur", () => this.applySelectedLightPosition(true));
             input.addEventListener("keydown", (event) => {
               if (event.key === "Enter") {
                 this.applySelectedLightPosition(true);
+              }
+            });
+            return;
+          }
+          if (
+            input === this.dom.lightRInput
+            || input === this.dom.lightGInput
+            || input === this.dom.lightBInput
+          ) {
+            input.addEventListener("input", () => this.applySelectedLightColor(false));
+            input.addEventListener("blur", () => this.applySelectedLightColor(true));
+            input.addEventListener("keydown", (event) => {
+              if (event.key === "Enter") {
+                this.applySelectedLightColor(true);
               }
             });
             return;
@@ -1514,11 +1559,21 @@ function startSparkViewer() {
 
       syncUiScale() {
         const viewport = window.visualViewport;
+        const viewportWidth = viewport?.width ?? window.innerWidth;
+        const viewportHeight = viewport?.height ?? window.innerHeight;
+        const layoutMode = computeLayoutMode({ viewportWidth });
+        const shellSize = computeShellSize({ viewportHeight, viewportWidth });
+        const panelWidths = computePanelWidths({ layoutMode, viewportWidth });
         const compensation = computeUiScale({
-          viewportHeight: viewport?.height ?? window.innerHeight,
-          viewportWidth: viewport?.width ?? window.innerWidth,
+          viewportHeight,
+          viewportWidth,
         });
         document.documentElement.style.setProperty("--ui-scale", compensation.toFixed(4));
+        document.documentElement.style.setProperty("--shell-width", `${shellSize.width}px`);
+        document.documentElement.style.setProperty("--shell-height", `${shellSize.height}px`);
+        document.documentElement.style.setProperty("--panel-left-width", `${panelWidths.left}px`);
+        document.documentElement.style.setProperty("--panel-right-width", `${panelWidths.right}px`);
+        document.body.dataset.layout = layoutMode;
       }
 
       installRenderActivityListeners() {
@@ -1708,9 +1763,13 @@ function startSparkViewer() {
 
       createLightRecord() {
         const root = new THREE.Group();
+        const defaultLight = createDefaultLightState({
+          radius: this.sceneBoundsSphere?.radius ?? 1,
+          sceneLightSerial: this.sceneLightSerial + 1,
+        });
         const bulb = new THREE.Mesh(
           new THREE.SphereGeometry(0.14, 18, 18),
-          new THREE.MeshBasicMaterial({ color: LIGHT_COLOR }),
+          new THREE.MeshBasicMaterial({ color: new THREE.Color(defaultLight.color.r, defaultLight.color.g, defaultLight.color.b) }),
         );
         const halo = new THREE.Mesh(
           new THREE.RingGeometry(0.18, 0.28, 28),
@@ -1726,9 +1785,10 @@ function startSparkViewer() {
         this.lightSceneRoot.add(root);
         return {
           id: `scene-light-${++this.sceneLightSerial}`,
-          helperScale: 1,
-          intensity: 20,
-          name: `Point Light ${this.sceneLightSerial}`,
+          color: { ...defaultLight.color },
+          helperScale: defaultLight.helperScale,
+          intensity: defaultLight.intensity,
+          name: defaultLight.name,
           root,
           visible: true,
           position: new THREE.Vector3(),
@@ -1834,8 +1894,12 @@ function startSparkViewer() {
 
       syncSelectedLightControls(syncInputs = true) {
         const light = this.getSelectedLight();
-        this.state.lightHelperScale = light?.helperScale ?? 1;
+        const lightColor = clampLightColor(light?.color ?? DEFAULT_LIGHT_COLOR);
+        this.state.lightHelperScale = light?.helperScale ?? DEFAULT_LIGHT_HELPER_SCALE;
         this.state.lightIntensity = light?.intensity ?? 20;
+        this.state.lightR = lightColor.r;
+        this.state.lightG = lightColor.g;
+        this.state.lightB = lightColor.b;
         this.state.lightX = light?.position?.x ?? 0;
         this.state.lightY = light?.position?.y ?? 0;
         this.state.lightZ = light?.position?.z ?? 0;
@@ -1856,12 +1920,30 @@ function startSparkViewer() {
         if (syncInputs && this.dom.lightIntensityInput) {
           this.dom.lightIntensityInput.value = this.state.lightIntensity.toFixed(this.state.lightIntensity < 10 ? 2 : 1);
         }
-        [this.dom.lightHelperScaleInput, this.dom.lightIntensityInput, this.dom.lightXInput, this.dom.lightYInput, this.dom.lightZInput].forEach((input) => {
+        [
+          this.dom.lightHelperScaleInput,
+          this.dom.lightIntensityInput,
+          this.dom.lightRInput,
+          this.dom.lightGInput,
+          this.dom.lightBInput,
+          this.dom.lightXInput,
+          this.dom.lightYInput,
+          this.dom.lightZInput,
+        ].forEach((input) => {
           if (input) {
             input.disabled = !light;
           }
         });
         if (syncInputs) {
+          if (this.dom.lightRInput) {
+            this.dom.lightRInput.value = formatNumber(this.state.lightR, 3);
+          }
+          if (this.dom.lightGInput) {
+            this.dom.lightGInput.value = formatNumber(this.state.lightG, 3);
+          }
+          if (this.dom.lightBInput) {
+            this.dom.lightBInput.value = formatNumber(this.state.lightB, 3);
+          }
           if (this.dom.lightXInput) {
             this.dom.lightXInput.value = formatNumber(this.state.lightX, Math.abs(this.state.lightX) < 10 ? 2 : 1);
           }
@@ -1897,14 +1979,16 @@ function startSparkViewer() {
         light.root.visible = light.visible;
         const bulb = light.root.children[1];
         const halo = light.root.children[0];
-        const helperScale = clampNumber(light.helperScale ?? 1, LIGHT_HELPER_SCALE_LIMITS);
+        const helperScale = clampNumber(light.helperScale ?? DEFAULT_LIGHT_HELPER_SCALE, LIGHT_HELPER_SCALE_LIMITS);
+        const lightColor = clampLightColor(light.color ?? DEFAULT_LIGHT_COLOR);
         if (bulb?.material?.color) {
-          bulb.material.color.set(LIGHT_COLOR);
+          bulb.material.color.setRGB(lightColor.r, lightColor.g, lightColor.b);
         }
         if (bulb) {
           bulb.scale.setScalar(helperScale);
         }
         if (halo) {
+          halo.material?.color?.setRGB(lightColor.r, lightColor.g, lightColor.b);
           const haloScale = THREE.MathUtils.clamp(0.8 + Math.log10(Math.max(light.intensity, 1) + 1) * 0.32, 0.8, 2.5);
           halo.scale.setScalar(haloScale * helperScale);
         }
@@ -2391,8 +2475,6 @@ function startSparkViewer() {
       addPointLight() {
         const light = this.createLightRecord();
         light.position.copy(this.camera.position);
-        const radius = Math.max(this.sceneBoundsSphere?.radius ?? 1, 1);
-        light.intensity = Math.max(radius * radius * 4, 12);
         this.updateLightVisual(light);
         this.sceneLights.push(light);
         this.selectLight(light.id, false);
@@ -2504,6 +2586,30 @@ function startSparkViewer() {
         }
       }
 
+      applySelectedLightColor(commit = false) {
+        const light = this.getSelectedLight();
+        const color = clampLightColor({
+          r: commit ? clampNumber(this.dom.lightRInput?.value ?? this.state.lightR, LIGHT_COLOR_COMPONENT_LIMITS) : this.dom.lightRInput?.value,
+          g: commit ? clampNumber(this.dom.lightGInput?.value ?? this.state.lightG, LIGHT_COLOR_COMPONENT_LIMITS) : this.dom.lightGInput?.value,
+          b: commit ? clampNumber(this.dom.lightBInput?.value ?? this.state.lightB, LIGHT_COLOR_COMPONENT_LIMITS) : this.dom.lightBInput?.value,
+        });
+        this.state.lightR = color.r;
+        this.state.lightG = color.g;
+        this.state.lightB = color.b;
+        if (light) {
+          light.color = { ...color };
+          this.updateLightVisual(light);
+          this.syncLightList();
+          this.refreshLightingModel();
+        }
+        if (commit) {
+          this.syncSelectedLightControls(true);
+          this.finishDeferredInteraction();
+        } else {
+          this.startDeferredInteraction();
+        }
+      }
+
       applySelectedLightPosition(commit = false) {
         const light = this.getSelectedLight();
         const xRaw = this.dom.lightXInput?.value?.trim() ?? "0";
@@ -2588,13 +2694,32 @@ function startSparkViewer() {
           this.activeLightCount,
           (index) => dynoFloat(0, `viewerLightIntensity${index}`),
         );
+        this.ensureDynoHandleArray(
+          this.lightHandles.colorR,
+          this.activeLightCount,
+          (index) => dynoFloat(DEFAULT_LIGHT_COLOR.r, `viewerLightColorR${index}`),
+        );
+        this.ensureDynoHandleArray(
+          this.lightHandles.colorG,
+          this.activeLightCount,
+          (index) => dynoFloat(DEFAULT_LIGHT_COLOR.g, `viewerLightColorG${index}`),
+        );
+        this.ensureDynoHandleArray(
+          this.lightHandles.colorB,
+          this.activeLightCount,
+          (index) => dynoFloat(DEFAULT_LIGHT_COLOR.b, `viewerLightColorB${index}`),
+        );
         const lightWorldPosition = new THREE.Vector3();
         activeLights.forEach((light, index) => {
           light.root.updateMatrixWorld(true);
           light.root.getWorldPosition(lightWorldPosition);
           light.position.copy(lightWorldPosition);
+          const lightColor = clampLightColor(light.color ?? DEFAULT_LIGHT_COLOR);
           this.lightHandles.positions[index].value.copy(lightWorldPosition);
           this.lightHandles.intensities[index].value = light.intensity;
+          this.lightHandles.colorR[index].value = lightColor.r;
+          this.lightHandles.colorG[index].value = lightColor.g;
+          this.lightHandles.colorB[index].value = lightColor.b;
         });
         this.activeOccluderCount = 0;
         this.runtimeLightOccluders = [];
@@ -4834,6 +4959,9 @@ function startSparkViewer() {
             }
             if (this.activeLightCount > 0) {
               worldModifiers.push(createPointLightColorModifier({
+                lightColorB: this.lightHandles.colorB,
+                lightColorG: this.lightHandles.colorG,
+                lightColorR: this.lightHandles.colorR,
                 lightCount: this.activeLightCount,
                 lightIntensities: this.lightHandles.intensities,
                 lightPositions: this.lightHandles.positions,
