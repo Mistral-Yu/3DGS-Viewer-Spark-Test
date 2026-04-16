@@ -5,8 +5,10 @@ import {
   ANIMATION_PRESET_LIBRARY,
   DEFAULT_ANIMATION_SCRIPT_NAME,
   buildAnimationDownloadName,
+  createDefaultAnimationPlaybackState,
   getAnimationPresetScriptText,
   parseAnimationScript,
+  shouldRenderAnimationFrame,
 } from '../viewer-animation.mjs';
 
 test('default preset parses as diffusion animation script', () => {
@@ -52,4 +54,21 @@ test('parseAnimationScript clamps numeric parameters and keeps origin vector', (
 
 test('buildAnimationDownloadName normalizes the script name for saving', () => {
   assert.equal(buildAnimationDownloadName('Diffuse / Burst v1'), 'diffuse-burst-v1.json');
+});
+
+test('createDefaultAnimationPlaybackState keeps the default script loaded but unapplied', () => {
+  const script = parseAnimationScript(getAnimationPresetScriptText('diffusion'));
+  const state = createDefaultAnimationPlaybackState(script);
+
+  assert.equal(state.animationLoop, true);
+  assert.equal(state.animationPlaying, false);
+  assert.equal(state.animationTime, 0);
+  assert.equal(state.animationDuration, script.duration);
+  assert.equal(state.animationApplied, false);
+});
+
+test('shouldRenderAnimationFrame requires an applied script that is actively playing', () => {
+  assert.equal(shouldRenderAnimationFrame({ animationApplied: false, animationPlaying: true }), false);
+  assert.equal(shouldRenderAnimationFrame({ animationApplied: true, animationPlaying: false }), false);
+  assert.equal(shouldRenderAnimationFrame({ animationApplied: true, animationPlaying: true }), true);
 });

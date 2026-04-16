@@ -6,8 +6,10 @@ import { computeLayoutMode, computePanelWidths, computeShellSize, computeUiScale
 import {
   DEFAULT_ANIMATION_SCRIPT_NAME,
   buildAnimationDownloadName,
+  createDefaultAnimationPlaybackState,
   getAnimationPresetScriptText,
   parseAnimationScript,
+  shouldRenderAnimationFrame,
 } from "./viewer-animation.mjs";
 import { DEFAULT_LIGHT_COLOR, DEFAULT_LIGHT_HELPER_SCALE, clampLightColor, createDefaultLightState } from "./viewer-lighting.mjs";
 
@@ -1309,6 +1311,7 @@ function startSparkViewer() {
         };
         this.activeAnimationModifier = null;
         this.activeAnimationScript = parseAnimationScript(getAnimationPresetScriptText("diffusion"));
+        const defaultAnimationState = createDefaultAnimationPlaybackState(this.activeAnimationScript);
         this.baseObjectModifier = undefined;
         this.baseWorldModifier = undefined;
         this.loadedShDegree = 3;
@@ -1326,10 +1329,7 @@ function startSparkViewer() {
           gridScaleMode: "auto",
           gridScaleValue: 1,
           inspectorTab: "scene",
-          animationLoop: this.activeAnimationScript.loop,
-          animationPlaying: false,
-          animationTime: 0,
-          animationDuration: this.activeAnimationScript.duration,
+          ...defaultAnimationState,
           lightHelperScale: DEFAULT_LIGHT_HELPER_SCALE,
           lightIntensity: 20,
           lightR: DEFAULT_LIGHT_COLOR.r,
@@ -1393,7 +1393,6 @@ function startSparkViewer() {
         this.syncLightList();
         this.syncAnimationEditor();
         this.syncAnimationControls(true);
-        this.applyAnimationScript(false);
         if (this.dom.colorspaceChip) {
           this.dom.colorspaceChip.textContent = "Display sRGB";
         }
@@ -5007,6 +5006,7 @@ function startSparkViewer() {
         const delta = Math.min(this.clock.getDelta(), 0.05);
         let keepAnimating = false;
         const animationActive = this.stepAnimation(delta);
+        const animationShouldRender = shouldRenderAnimationFrame(this.state);
         const movedByKeys = Boolean(this.firstPerson.update(delta));
         if (movedByKeys && this.activeMode === "orbit") {
           this.orbitControls.target.add(this.firstPerson.lastMovementDelta);
@@ -5020,7 +5020,7 @@ function startSparkViewer() {
         } else {
           keepAnimating = movedByKeys;
         }
-        keepAnimating = keepAnimating || movedByKeys || animationActive;
+        keepAnimating = keepAnimating || movedByKeys || animationActive || animationShouldRender;
         const timedRenderActive = this.isTimedRenderActive(frameStartedAt);
         const scheduledReady = !this.scheduledRenderAt || frameStartedAt >= this.scheduledRenderAt;
         const shouldDraw = (this.renderInvalidated && scheduledReady)
@@ -5454,6 +5454,7 @@ function startSparkViewer() {
           this.state.animationLoop = this.activeAnimationScript.loop;
           this.state.animationDuration = this.activeAnimationScript.duration;
           this.state.animationTime = Math.min(this.state.animationTime, this.state.animationDuration);
+          this.state.animationApplied = true;
           this.applyActiveAnimationUniforms();
           this.activeAnimationModifier = createAnimationModifierFromScript(this.activeAnimationScript, this.animationModifierHandles);
           this.syncAnimationEditor();
@@ -5466,6 +5467,7 @@ function startSparkViewer() {
           }
         } catch (error) {
           this.activeAnimationModifier = null;
+          this.state.animationApplied = false;
           this.state.animationPlaying = false;
           this.applyRenderMode(false);
           this.forceVisualRefresh(2);
@@ -5477,7 +5479,7 @@ function startSparkViewer() {
       }
 
       stepAnimation(delta) {
-        if (!this.activeAnimationModifier) {
+        if (!this.activeAnimationModifier || !this.state.animationApplied) {
           return false;
         }
         if (!this.state.animationPlaying) {

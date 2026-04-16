@@ -108,3 +108,17 @@ export function buildAnimationDownloadName(name) {
     .replace(/^-+|-+$/g, '') || 'animation';
   return `${normalized}.json`;
 }
+
+export function createDefaultAnimationPlaybackState(script) {
+  return {
+    animationApplied: false,
+    animationDuration: Math.max(script?.duration || 0.1, 0.1),
+    animationLoop: script?.loop !== false,
+    animationPlaying: false,
+    animationTime: 0,
+  };
+}
+
+export function shouldRenderAnimationFrame({ animationApplied, animationPlaying }) {
+  return Boolean(animationApplied && animationPlaying);
+}
