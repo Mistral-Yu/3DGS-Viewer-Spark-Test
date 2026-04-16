@@ -1,19 +1,6 @@
-export const DEFAULT_ANIMATION_SCRIPT_NAME = 'Origin Diffusion';
+export const DEFAULT_ANIMATION_SCRIPT_NAME = 'Splat Explosion';
 
 const PRESET_LIBRARY = {
-  diffusion: {
-    duration: 6,
-    loop: true,
-    origin: [0, 0, 0],
-    params: {
-      distanceScale: 1.4,
-      opacityPower: 1.35,
-      scaleInfluence: 1.2,
-      speed: 1,
-      strength: 1.8,
-      swirl: 0.18,
-    },
-  },
   explosion: {
     duration: 3.2,
     loop: true,
@@ -64,12 +51,15 @@ const normalizeParams = (params = {}, defaults = {}) => {
 
 export function parseAnimationScript(text) {
   const source = JSON.parse(String(text));
-  const preset = source.preset in PRESET_LIBRARY ? source.preset : 'diffusion';
+  if (source.preset != null && !(source.preset in PRESET_LIBRARY)) {
+    throw new Error(`Unknown animation preset: ${source.preset}`);
+  }
+  const preset = source.preset ?? 'explosion';
   const presetDefaults = PRESET_LIBRARY[preset];
   return {
     duration: round(clamp(Number(source.duration) || presetDefaults.duration, 0.1, 120), 3),
     loop: source.loop !== false,
-    name: String(source.name || (preset === 'diffusion' ? DEFAULT_ANIMATION_SCRIPT_NAME : 'Splat Explosion')).trim() || DEFAULT_ANIMATION_SCRIPT_NAME,
+    name: String(source.name || DEFAULT_ANIMATION_SCRIPT_NAME).trim() || DEFAULT_ANIMATION_SCRIPT_NAME,
     origin: normalizeOrigin(source.origin ?? presetDefaults.origin),
     params: normalizeParams(source.params, presetDefaults.params),
     preset,
@@ -95,7 +85,7 @@ export function getAnimationPresetScriptText(name) {
     throw new Error(`Unknown animation preset: ${name}`);
   }
   return serializeAnimationScript({
-    name: name === 'diffusion' ? DEFAULT_ANIMATION_SCRIPT_NAME : 'Splat Explosion',
+    name: DEFAULT_ANIMATION_SCRIPT_NAME,
     preset: name,
     ...PRESET_LIBRARY[name],
   });
@@ -112,8 +102,8 @@ export function buildAnimationDownloadName(name) {
 export function createDefaultAnimationPlaybackState(script) {
   return {
     animationApplied: false,
-    animationDuration: Math.max(script?.duration || 0.1, 0.1),
-    animationLoop: script?.loop !== false,
+    animationDuration: Math.max(script?.duration || 0, 0),
+    animationLoop: Boolean(script?.loop),
     animationPlaying: false,
     animationTime: 0,
   };

@@ -564,8 +564,7 @@
                 <label class="field" title="Choose a built-in animation preset script.">
                   <span>Preset</span>
                   <select id="animation-preset-select">
-                    <option value="diffusion" selected>Origin Diffusion</option>
-                    <option value="explosion">Splat Explosion</option>
+                    <option value="explosion" selected>Splat Explosion</option>
                   </select>
                 </label>
                 <div class="button-pair">
@@ -574,7 +573,7 @@
                 </div>
                 <div class="button-pair">
                   <button class="toolbar-button" type="button" id="animation-open-button" title="Load an animation script JSON file.">Open Script</button>
-                  <button class="toolbar-button" type="button" id="animation-copy-default-button" title="Restore the default origin diffusion script.">Default Script</button>
+                  <button class="toolbar-button" type="button" id="animation-copy-default-button" title="Clear the current animation script so no animation is applied.">No Script</button>
                 </div>
               </div>
 
@@ -587,7 +586,7 @@
                   <span>Script JSON</span>
                   <textarea class="script-editor" id="animation-script-editor" spellcheck="false"></textarea>
                 </label>
-                <p class="progress-label" id="animation-script-status">Origin Diffusion is loaded. Apply the script, then use the timeline below the viewer.</p>
+                <p class="progress-label" id="animation-script-status">No animation script loaded. Use Splat Explosion, open a script, or keep animation off.</p>
               </div>
             </section>
 

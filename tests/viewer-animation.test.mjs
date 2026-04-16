@@ -11,20 +11,22 @@ import {
   shouldRenderAnimationFrame,
 } from '../viewer-animation.mjs';
 
-test('default preset parses as diffusion animation script', () => {
-  const parsed = parseAnimationScript(getAnimationPresetScriptText('diffusion'));
+test('only the explosion preset remains built in', () => {
+  assert.deepEqual(Object.keys(ANIMATION_PRESET_LIBRARY), ['explosion']);
+  const parsed = parseAnimationScript(getAnimationPresetScriptText('explosion'));
 
   assert.equal(parsed.name, DEFAULT_ANIMATION_SCRIPT_NAME);
-  assert.equal(parsed.preset, 'diffusion');
+  assert.equal(parsed.preset, 'explosion');
   assert.equal(parsed.loop, true);
   assert.ok(parsed.duration > 0);
+  assert.ok(parsed.params.strength > 0);
 });
 
-test('explosion preset is available as a built-in script', () => {
-  assert.ok(ANIMATION_PRESET_LIBRARY.explosion);
-  const parsed = parseAnimationScript(getAnimationPresetScriptText('explosion'));
-  assert.equal(parsed.preset, 'explosion');
-  assert.ok(parsed.params.strength > 0);
+test('legacy diffusion scripts are rejected instead of being silently remapped', () => {
+  assert.throws(
+    () => parseAnimationScript(JSON.stringify({ preset: 'diffusion', duration: 6, loop: true, params: {} })),
+    /Unknown animation preset: diffusion/,
+  );
 });
 
 test('parseAnimationScript clamps numeric parameters and keeps origin vector', () => {
@@ -56,14 +58,13 @@ test('buildAnimationDownloadName normalizes the script name for saving', () => {
   assert.equal(buildAnimationDownloadName('Diffuse / Burst v1'), 'diffuse-burst-v1.json');
 });
 
-test('createDefaultAnimationPlaybackState keeps the default script loaded but unapplied', () => {
-  const script = parseAnimationScript(getAnimationPresetScriptText('diffusion'));
-  const state = createDefaultAnimationPlaybackState(script);
+test('createDefaultAnimationPlaybackState keeps animation off when no script is loaded', () => {
+  const state = createDefaultAnimationPlaybackState(null);
 
-  assert.equal(state.animationLoop, true);
+  assert.equal(state.animationLoop, false);
   assert.equal(state.animationPlaying, false);
   assert.equal(state.animationTime, 0);
-  assert.equal(state.animationDuration, script.duration);
+  assert.equal(state.animationDuration, 0);
   assert.equal(state.animationApplied, false);
 });
 

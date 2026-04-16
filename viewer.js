@@ -74,7 +74,6 @@ function startSparkViewer() {
       spz: "SPZ compressed",
     };
     const ANIMATION_PRESET_LABELS = {
-      diffusion: "Origin Diffusion",
       explosion: "Splat Explosion",
     };
     const ANIMATION_PARAM_LIMITS = {
@@ -492,53 +491,6 @@ function startSparkViewer() {
         };
       });
 
-    const createDiffusionAnimationModifier = ({
-      distanceScale,
-      epsilon,
-      epsilonVector,
-      opacityPower,
-      origin,
-      scaleInfluence,
-      speed,
-      strength,
-      swirl,
-      time,
-      up,
-    }) =>
-      dynoBlock({ gsplat: Gsplat }, { gsplat: Gsplat }, ({ gsplat }) => {
-        if (!gsplat) {
-          throw new Error("No gsplat input");
-        }
-        const outputs = splitGsplat(gsplat).outputs;
-        const floatZero = dynoConst("float", 0);
-        const floatOne = dynoConst("float", 1);
-        const swirlWave = dynoConst("float", 3.1);
-        const relative = sub(outputs.center, origin);
-        const distanceFromOrigin = max(length(relative), epsilon);
-        const direction = normalize(add(relative, epsilonVector));
-        const tangent = normalize(add(cross(direction, up), epsilonVector));
-        const scaleMagnitude = max(length(outputs.scales), epsilon);
-        const scaleFactor = add(floatOne, mul(scaleMagnitude, scaleInfluence));
-        const travel = sub(mul(mul(time, speed), scaleFactor), mul(distanceFromOrigin, distanceScale));
-        const phase = clamp(travel, floatZero, floatOne);
-        const opacity = pow(phase, opacityPower);
-        const radialOffset = mul(direction, mul(strength, mul(phase, scaleFactor)));
-        const swirlOffset = mul(
-          tangent,
-          mul(
-            sin(add(mul(distanceFromOrigin, swirlWave), mul(time, add(swirl, dynoConst("float", 0.25))))),
-            mul(strength, mul(swirl, phase)),
-          ),
-        );
-        return {
-          gsplat: combineGsplat({
-            gsplat,
-            center: add(outputs.center, add(radialOffset, swirlOffset)),
-            opacity,
-          }),
-        };
-      });
-
     const createExplosionAnimationModifier = ({
       distanceScale,
       epsilon,
@@ -587,13 +539,10 @@ function startSparkViewer() {
       });
 
     const createAnimationModifierFromScript = (script, handles) => {
-      if (!script) {
+      if (!script || script.preset !== "explosion") {
         return null;
       }
-      if (script.preset === "explosion") {
-        return createExplosionAnimationModifier(handles);
-      }
-      return createDiffusionAnimationModifier(handles);
+      return createExplosionAnimationModifier(handles);
     };
 
     const getFileExtension = (name) => (name.split(".").pop() || "").toLowerCase();
@@ -1310,8 +1259,8 @@ function startSparkViewer() {
           up: dynoVec3(new THREE.Vector3(0, 1, 0.35).normalize(), "viewerAnimationUp"),
         };
         this.activeAnimationModifier = null;
-        this.activeAnimationScript = parseAnimationScript(getAnimationPresetScriptText("diffusion"));
-        const defaultAnimationState = createDefaultAnimationPlaybackState(this.activeAnimationScript);
+        this.activeAnimationScript = null;
+        const defaultAnimationState = createDefaultAnimationPlaybackState(null);
         this.baseObjectModifier = undefined;
         this.baseWorldModifier = undefined;
         this.loadedShDegree = 3;
@@ -1568,8 +1517,8 @@ function startSparkViewer() {
             this.syncAnimationEditor();
           }
         });
-        this.dom.animationLoadPresetButton?.addEventListener("click", () => this.loadAnimationPreset(this.dom.animationPresetSelect?.value || "diffusion"));
-        this.dom.animationCopyDefaultButton?.addEventListener("click", () => this.loadAnimationPreset("diffusion"));
+        this.dom.animationLoadPresetButton?.addEventListener("click", () => this.loadAnimationPreset(this.dom.animationPresetSelect?.value || "explosion"));
+        this.dom.animationCopyDefaultButton?.addEventListener("click", () => this.clearAnimationScript(true));
         this.dom.animationApplyButton?.addEventListener("click", () => this.applyAnimationScript(true));
         this.dom.animationPlayButton?.addEventListener("click", () => this.playAnimation());
         this.dom.animationPauseButton?.addEventListener("click", () => this.pauseAnimation());
@@ -5373,35 +5322,39 @@ function startSparkViewer() {
 
       syncAnimationEditor() {
         if (this.dom.animationScriptEditor) {
-          this.dom.animationScriptEditor.value = JSON.stringify({
-            version: 1,
-            name: this.activeAnimationScript.name,
-            preset: this.activeAnimationScript.preset,
-            duration: this.activeAnimationScript.duration,
-            loop: this.activeAnimationScript.loop,
-            origin: [
-              this.activeAnimationScript.origin.x,
-              this.activeAnimationScript.origin.y,
-              this.activeAnimationScript.origin.z,
-            ],
-            params: this.activeAnimationScript.params,
-          }, null, 2);
+          this.dom.animationScriptEditor.value = this.activeAnimationScript
+            ? JSON.stringify({
+              version: 1,
+              name: this.activeAnimationScript.name,
+              preset: this.activeAnimationScript.preset,
+              duration: this.activeAnimationScript.duration,
+              loop: this.activeAnimationScript.loop,
+              origin: [
+                this.activeAnimationScript.origin.x,
+                this.activeAnimationScript.origin.y,
+                this.activeAnimationScript.origin.z,
+              ],
+              params: this.activeAnimationScript.params,
+            }, null, 2)
+            : "";
         }
         if (this.dom.animationPresetSelect) {
-          this.dom.animationPresetSelect.value = this.activeAnimationScript.preset;
+          this.dom.animationPresetSelect.value = this.activeAnimationScript?.preset || "explosion";
         }
         if (this.dom.animationScriptStatus) {
-          this.dom.animationScriptStatus.textContent = `${this.activeAnimationScript.name} is ready. Apply the script, then use the timeline below the viewer.`;
+          this.dom.animationScriptStatus.textContent = this.activeAnimationScript
+            ? `${this.activeAnimationScript.name} is loaded. Apply the script to animate the splats.`
+            : "No animation script loaded. Use Splat Explosion, open a script, or keep animation off.";
         }
       }
 
       syncAnimationControls(syncSlider = true) {
-        const duration = Math.max(this.state.animationDuration || this.activeAnimationScript?.duration || 1, 0.1);
+        const duration = Math.max(this.state.animationDuration || this.activeAnimationScript?.duration || 0, 0);
         this.state.animationDuration = duration;
         if (this.dom.animationTimeRange) {
-          this.dom.animationTimeRange.max = String(duration);
+          this.dom.animationTimeRange.max = String(Math.max(duration, 0.01));
           if (syncSlider) {
-            this.dom.animationTimeRange.value = String(Math.min(Math.max(this.state.animationTime, 0), duration));
+            this.dom.animationTimeRange.value = String(Math.min(Math.max(this.state.animationTime, 0), Math.max(duration, 0.01)));
           }
         }
         if (this.dom.animationTimeLabel) {
@@ -5433,15 +5386,37 @@ function startSparkViewer() {
         this.animationModifierHandles.time.value = this.state.animationTime;
       }
 
+      clearAnimationScript(announce = false) {
+        this.activeAnimationScript = null;
+        this.activeAnimationModifier = null;
+        Object.assign(this.state, createDefaultAnimationPlaybackState(null));
+        this.animationModifierHandles.time.value = 0;
+        this.syncAnimationEditor();
+        this.syncAnimationControls(true);
+        this.applyRenderMode(false);
+        this.forceVisualRefresh(2);
+        this.queueSparkSceneUpdate();
+        if (announce) {
+          this.updateStatus("Animation cleared");
+          this.updateRenderChip("Animation off");
+        }
+      }
+
       loadAnimationPreset(name) {
         try {
           this.activeAnimationScript = parseAnimationScript(getAnimationPresetScriptText(name));
+          this.activeAnimationModifier = null;
+          this.state.animationApplied = false;
           this.state.animationLoop = this.activeAnimationScript.loop;
           this.state.animationDuration = this.activeAnimationScript.duration;
+          this.state.animationPlaying = false;
           this.state.animationTime = 0;
           this.syncAnimationEditor();
           this.syncAnimationControls(true);
-          this.applyAnimationScript(true);
+          this.applyRenderMode(false);
+          this.forceVisualRefresh(2);
+          this.queueSparkSceneUpdate();
+          this.updateStatus(`Loaded ${this.activeAnimationScript.name}`);
         } catch (error) {
           this.updateStatus(error instanceof Error ? error.message : "Failed to load animation preset");
         }
@@ -5449,7 +5424,11 @@ function startSparkViewer() {
 
       applyAnimationScript(announce = true) {
         try {
-          const text = this.dom.animationScriptEditor?.value || getAnimationPresetScriptText("diffusion");
+          const text = this.dom.animationScriptEditor?.value?.trim() || "";
+          if (!text) {
+            this.clearAnimationScript(announce);
+            return;
+          }
           this.activeAnimationScript = parseAnimationScript(text);
           this.state.animationLoop = this.activeAnimationScript.loop;
           this.state.animationDuration = this.activeAnimationScript.duration;
@@ -5461,6 +5440,7 @@ function startSparkViewer() {
           this.syncAnimationControls(true);
           this.applyRenderMode(false);
           this.forceVisualRefresh(3);
+          this.queueSparkSceneUpdate();
           if (announce) {
             this.updateStatus(`Applied ${this.activeAnimationScript.name}`);
             this.updateRenderChip(`${ANIMATION_PRESET_LABELS[this.activeAnimationScript.preset] || "Animation"} ready`);
@@ -5471,6 +5451,7 @@ function startSparkViewer() {
           this.state.animationPlaying = false;
           this.applyRenderMode(false);
           this.forceVisualRefresh(2);
+          this.queueSparkSceneUpdate();
           this.updateStatus(error instanceof Error ? error.message : "Animation script parse failed");
           if (this.dom.animationScriptStatus) {
             this.dom.animationScriptStatus.textContent = error instanceof Error ? error.message : "Animation script parse failed";
@@ -5484,7 +5465,7 @@ function startSparkViewer() {
         }
         if (!this.state.animationPlaying) {
           this.animationModifierHandles.time.value = this.state.animationTime;
-          return this.state.animationTime > 0;
+          return false;
         }
         const duration = Math.max(this.state.animationDuration || 0.1, 0.1);
         let nextTime = this.state.animationTime + Math.max(delta, 0);
@@ -5499,24 +5480,28 @@ function startSparkViewer() {
         this.state.animationTime = nextTime;
         this.animationModifierHandles.time.value = nextTime;
         this.syncAnimationControls(true);
-        this.renderInvalidated = true;
+        this.invalidateRender();
+        this.forceVisualRefresh(1);
+        this.queueSparkSceneUpdate();
         if (!this.state.animationPlaying) {
           this.updateStatus(`Paused ${this.activeAnimationScript.name}`);
         }
-        return this.state.animationPlaying || nextTime > 0;
+        return true;
       }
 
       playAnimation() {
         if (!this.activeAnimationModifier) {
           this.applyAnimationScript(false);
         }
-        if (!this.activeAnimationModifier) {
+        if (!this.activeAnimationModifier || !this.state.animationApplied) {
+          this.updateStatus("No animation script applied");
           return;
         }
         this.state.animationPlaying = true;
         this.lastAnimationTickAt = performance.now();
         this.markRenderActivity(10_000);
         this.forceVisualRefresh(2);
+        this.queueSparkSceneUpdate();
         this.syncAnimationControls(true);
         this.updateStatus(`Playing ${this.activeAnimationScript.name}`);
       }
@@ -5524,7 +5509,7 @@ function startSparkViewer() {
       pauseAnimation() {
         this.state.animationPlaying = false;
         this.syncAnimationControls(true);
-        this.updateStatus(`Paused ${this.activeAnimationScript.name}`);
+        this.updateStatus(`Paused ${this.activeAnimationScript?.name || "animation"}`);
       }
 
       resetAnimation() {
@@ -5533,21 +5518,25 @@ function startSparkViewer() {
         this.animationModifierHandles.time.value = 0;
         this.syncAnimationControls(true);
         this.forceVisualRefresh(2);
-        this.updateStatus(`Reset ${this.activeAnimationScript.name}`);
+        this.queueSparkSceneUpdate();
+        this.updateStatus(`Reset ${this.activeAnimationScript?.name || "animation"}`);
       }
 
       setAnimationTimeFromUi(commit = false) {
         if (!this.dom.animationTimeRange) {
           return;
         }
-        const duration = Math.max(this.state.animationDuration || 0.1, 0.1);
-        this.state.animationTime = THREE.MathUtils.clamp(Number(this.dom.animationTimeRange.value) || 0, 0, duration);
+        const duration = Math.max(this.state.animationDuration || 0, 0);
+        this.state.animationTime = THREE.MathUtils.clamp(Number(this.dom.animationTimeRange.value) || 0, 0, Math.max(duration, 0));
         this.animationModifierHandles.time.value = this.state.animationTime;
         if (commit) {
           this.state.animationPlaying = false;
         }
         this.syncAnimationControls(true);
         this.forceVisualRefresh(commit ? 3 : 1);
+        if (this.state.animationApplied) {
+          this.queueSparkSceneUpdate();
+        }
       }
 
       async loadAnimationScriptFile(file) {
