@@ -278,6 +278,26 @@ export function removeToneCurvePoint(state, channel = null, index = null) {
   };
 }
 
+export function findNearestRemovableToneCurvePointIndex(points, targetPoint, threshold = 0.05) {
+  const curve = normalizeCurvePoints(points);
+  if (curve.length <= 2) {
+    return null;
+  }
+  const target = clonePoint(targetPoint);
+  let closestIndex = null;
+  let closestDistanceSq = Math.max(Number(threshold) || 0, 0) ** 2;
+  for (let index = 1; index < curve.length - 1; index += 1) {
+    const candidate = curve[index];
+    const distanceSq = ((candidate.x - target.x) ** 2) + ((candidate.y - target.y) ** 2);
+    if (distanceSq > closestDistanceSq) {
+      continue;
+    }
+    closestIndex = index;
+    closestDistanceSq = distanceSq;
+  }
+  return closestIndex;
+}
+
 export function isNeutralToneCurve(state) {
   const normalized = normalizeToneCurveState(state);
   return TONE_CURVE_CHANNELS.every((channel) => {

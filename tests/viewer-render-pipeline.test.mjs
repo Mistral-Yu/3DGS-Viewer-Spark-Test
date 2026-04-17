@@ -24,6 +24,13 @@ test('tone curve state is stored per scene item and applied only to the selected
   assert.doesNotMatch(source, /createToneCurveColorModifier\(this\.state\.toneCurve\)/);
 });
 
+test('tone curve graph supports direct left-click add and right-click remove without using the add button', () => {
+  assert.match(source, /this\.dom\.toneCurveGraph\?\.addEventListener\("pointerdown", \(event\) => this\.handleToneCurveGraphPointerDown\(event\)\);/);
+  assert.match(source, /this\.dom\.toneCurveGraph\?\.addEventListener\("contextmenu", \(event\) => this\.handleToneCurveGraphContextMenu\(event\)\);/);
+  assert.match(source, /handleToneCurveGraphPointerDown\(event\)\s*\{[\s\S]*if \(event\.button !== 0\)[\s\S]*insertToneCurvePoint\(this\.state\.toneCurve,\s*channel,\s*\{\s*x,\s*y\s*\}\)/);
+  assert.match(source, /handleToneCurveGraphContextMenu\(event\)\s*\{[\s\S]*findNearestRemovableToneCurvePointIndex\([\s\S]*removeToneCurvePoint\(this\.state\.toneCurve,\s*channel,\s*index\)/);
+});
+
 test('exposure and tone-curve edits use deferred low-fps preview while inputs are active', () => {
   assert.match(source, /setExposure\(value, \{ commit = true, syncInput = true \} = \{\}\) \{[\s\S]*if \(commit\) \{[\s\S]*this\.finishDeferredInteraction\(\);[\s\S]*\} else \{[\s\S]*this\.startDeferredInteraction\(\);/);
   assert.match(source, /setSelectedExposure\(value, \{ commit = true, syncInput = true \} = \{\}\) \{[\s\S]*if \(commit\) \{[\s\S]*this\.finishDeferredInteraction\(\);[\s\S]*\} else \{[\s\S]*this\.startDeferredInteraction\(\);/);
@@ -37,4 +44,9 @@ test('info panel metadata includes auto-lod and load-mode summaries', () => {
   assert.match(source, /infoLoadMode: document\.getElementById\("info-load-mode"\)/);
   assert.match(source, /this\.dom\.infoAutoLod\.textContent = this\.state\.autoLodEnabled \? "Enabled" : "Disabled";/);
   assert.match(source, /this\.dom\.infoLoadMode\.textContent = buildLodInfoLabel\(\{/);
+});
+
+test('Auto LoD starts disabled in the viewer state', () => {
+  assert.match(source, /autoLodEnabled:\s*false,/);
+  assert.doesNotMatch(source, /autoLodEnabled:\s*true,/);
 });

@@ -5,6 +5,7 @@ import {
   applyToneCurveToLinearRgb,
   buildToneCurveSvgPathData,
   buildToneCurveState,
+  findNearestRemovableToneCurvePointIndex,
   getSelectedToneCurvePoint,
   insertToneCurvePoint,
   isNeutralToneCurve,
@@ -36,6 +37,16 @@ test('insertToneCurvePoint adds a midpoint on the selected channel and keeps it 
   assert.deepEqual(getSelectedToneCurvePoint(inserted, 'master'), { x: 0.25, y: 0.25 });
 });
 
+test('insertToneCurvePoint keeps the clicked graph position instead of resampling y when both coordinates are provided', () => {
+  const inserted = insertToneCurvePoint(buildToneCurveState(), 'master', { x: 0.25, y: 0.8 });
+
+  assert.deepEqual(inserted.curves.master, [
+    { x: 0, y: 0 },
+    { x: 0.25, y: 0.8 },
+    { x: 1, y: 1 },
+  ]);
+});
+
 test('updateToneCurvePoint clamps edited points between neighbours while preserving fixed endpoints', () => {
   const base = insertToneCurvePoint(buildToneCurveState(), 'master', { x: 0.4, y: 0.4 });
   const updated = updateToneCurvePoint(base, 'master', 1, { x: 2, y: -1 });
@@ -53,6 +64,19 @@ test('removeToneCurvePoint deletes only non-endpoint points and falls back to id
 
   assert.deepEqual(removed.curves.blue, [{ x: 0, y: 0 }, { x: 1, y: 1 }]);
   assert.deepEqual(removeToneCurvePoint(removed, 'blue', 0), removed);
+});
+
+test('findNearestRemovableToneCurvePointIndex removes only interior points near the clicked graph position', () => {
+  const curve = [
+    { x: 0, y: 0 },
+    { x: 0.2, y: 0.75 },
+    { x: 0.7, y: 0.35 },
+    { x: 1, y: 1 },
+  ];
+
+  assert.equal(findNearestRemovableToneCurvePointIndex(curve, { x: 0.21, y: 0.74 }, 0.05), 1);
+  assert.equal(findNearestRemovableToneCurvePointIndex(curve, { x: 0.02, y: 0.02 }, 0.1), null);
+  assert.equal(findNearestRemovableToneCurvePointIndex(curve, { x: 0.4, y: 0.5 }, 0.05), null);
 });
 
 test('applyToneCurveToLinearRgb uses master plus per-channel point curves in linear sRGB', () => {

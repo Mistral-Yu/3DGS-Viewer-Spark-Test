@@ -8,7 +8,7 @@ import {
   detectLodAvailability,
 } from '../viewer-lod.mjs';
 
-test('buildSplatMeshLoadOptions enables Spark 3DGS LoD by default', () => {
+test('buildSplatMeshLoadOptions keeps Auto LoD disabled unless explicitly enabled', () => {
   assert.deepEqual(buildSplatMeshLoadOptions(true), { lod: true });
   assert.deepEqual(buildSplatMeshLoadOptions(false), {});
 });

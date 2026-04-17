@@ -8,6 +8,7 @@ import {
   applyToneCurveToLinearRgb,
   buildToneCurveSvgPathData,
   buildToneCurveState,
+  findNearestRemovableToneCurvePointIndex,
   getSelectedToneCurvePoint,
   insertToneCurvePoint,
   isNeutralToneCurve,
@@ -1291,7 +1292,7 @@ function startSparkViewer() {
         this.modelMeta = createDefaultModelMeta();
         this.state = {
           autoRotate: false,
-          autoLodEnabled: true,
+          autoLodEnabled: false,
           background: "graphite",
           depthRange: DEPTH_RANGE_DEFAULT,
           exportFalloff: true,
@@ -1486,6 +1487,8 @@ function startSparkViewer() {
           this.state.toneCurve = setToneCurveActiveChannel(this.state.toneCurve, event.target.value);
           this.syncToneCurveUi();
         });
+        this.dom.toneCurveGraph?.addEventListener("pointerdown", (event) => this.handleToneCurveGraphPointerDown(event));
+        this.dom.toneCurveGraph?.addEventListener("contextmenu", (event) => this.handleToneCurveGraphContextMenu(event));
         this.dom.toneCurveAddPointButton?.addEventListener("click", () => {
           this.state.toneCurve = insertToneCurvePoint(this.state.toneCurve);
           this.applyToneCurve(true, true);
@@ -3970,6 +3973,55 @@ function startSparkViewer() {
         });
       }
 
+      getToneCurveGraphPointFromEvent(event) {
+        if (!this.dom.toneCurveGraph) {
+          return null;
+        }
+        const rect = this.dom.toneCurveGraph.getBoundingClientRect();
+        if (!rect.width || !rect.height) {
+          return null;
+        }
+        return {
+          x: THREE.MathUtils.clamp((event.clientX - rect.left) / rect.width, 0, 1),
+          y: THREE.MathUtils.clamp(1 - ((event.clientY - rect.top) / rect.height), 0, 1),
+        };
+      }
+
+      handleToneCurveGraphPointerDown(event) {
+        if (event.button !== 0) {
+          return;
+        }
+        if (event.target?.closest?.("[data-tone-curve-point-index]")) {
+          return;
+        }
+        const graphPoint = this.getToneCurveGraphPointFromEvent(event);
+        if (!graphPoint) {
+          return;
+        }
+        event.preventDefault();
+        const toneCurve = normalizeToneCurveState(this.state.toneCurve);
+        const channel = toneCurve.activeChannel;
+        const { x, y } = graphPoint;
+        this.state.toneCurve = insertToneCurvePoint(this.state.toneCurve, channel, { x, y });
+        this.applyToneCurve(true, true);
+      }
+
+      handleToneCurveGraphContextMenu(event) {
+        event.preventDefault();
+        const graphPoint = this.getToneCurveGraphPointFromEvent(event);
+        if (!graphPoint) {
+          return;
+        }
+        const toneCurve = normalizeToneCurveState(this.state.toneCurve);
+        const channel = toneCurve.activeChannel;
+        const index = findNearestRemovableToneCurvePointIndex(toneCurve.curves[channel], graphPoint);
+        if (index == null) {
+          return;
+        }
+        this.state.toneCurve = removeToneCurvePoint(this.state.toneCurve, channel, index);
+        this.applyToneCurve(true, true);
+      }
+
       startToneCurvePointDrag(index, event) {
         if (index <= 0 || !this.dom.toneCurveGraph) {
           return;
@@ -3989,12 +4041,11 @@ function startSparkViewer() {
         if (!this.toneCurvePointerDrag || !this.dom.toneCurveGraph) {
           return;
         }
-        const rect = this.dom.toneCurveGraph.getBoundingClientRect();
-        if (!rect.width || !rect.height) {
+        const graphPoint = this.getToneCurveGraphPointFromEvent(event);
+        if (!graphPoint) {
           return;
         }
-        const x = THREE.MathUtils.clamp((event.clientX - rect.left) / rect.width, 0, 1);
-        const y = THREE.MathUtils.clamp(1 - ((event.clientY - rect.top) / rect.height), 0, 1);
+        const { x, y } = graphPoint;
         this.state.toneCurve = updateToneCurvePoint(
           this.state.toneCurve,
           this.toneCurvePointerDrag.channel,

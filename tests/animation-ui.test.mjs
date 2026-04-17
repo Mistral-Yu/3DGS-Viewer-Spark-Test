@@ -18,7 +18,10 @@ test('timeline keeps only playback buttons in a single toolbar group', () => {
   assert.match(toolbarGroup, /id="animation-pause-button"/);
   assert.match(toolbarGroup, /id="animation-reset-button"/);
   assert.doesNotMatch(timeline, /id="animation-apply-button"/);
-  assert.match(css, /\.button-pair-timeline\s*\{[\s\S]*grid-template-columns:\s*repeat\(4, minmax\(0, 1fr\)\)/);
+  assert.match(
+    css,
+    /\.button-pair\.button-pair-timeline\s*\{[\s\S]*display:\s*grid;[\s\S]*grid-template-columns:\s*repeat\(4, minmax\(0, 1fr\)\)/,
+  );
 });
 
 test('animation tab keeps preset load beside preset and script actions in the panel', () => {
@@ -46,9 +49,17 @@ test('open file actions expose the auto-lod toggle beside file loading and viewe
   const helpers = helpersMatch[0];
 
   assert.match(helpers, /id="open-file-button"[\s\S]*id="lod-auto-checkbox"/);
-  assert.match(helpers, /<input id="lod-auto-checkbox" type="checkbox" checked>/);
-  assert.match(html, /id="lod-chip"/);
+  assert.match(helpers, /<input id="lod-auto-checkbox" type="checkbox">/);
+  assert.match(html, /id="lod-chip">LOD Auto Off</);
   assert.match(css, /\.hud-chip-lod/);
+});
+
+test('inspector tabs stay forced onto a single row', () => {
+  const tabsMatch = html.match(/<div class="inspector-tabs" role="tablist" aria-label="Inspector tabs">[\s\S]*?<\/div>/);
+  assert.ok(tabsMatch, 'inspector tablist should exist');
+  assert.match(tabsMatch[0], /id="tab-scene-button"/);
+  assert.match(tabsMatch[0], /id="tab-export-button"/);
+  assert.match(css, /\.inspector-tabs\s*\{[\s\S]*grid-template-columns:\s*repeat\(6, minmax\(0, 1fr\)\)/);
 });
 
 test('color tab exposes point-based linear-srgb tone curve controls', () => {
