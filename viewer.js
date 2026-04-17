@@ -5332,8 +5332,9 @@ function startSparkViewer() {
           if (this.activeAnimationModifier) {
             objectModifiers.push(this.activeAnimationModifier);
           }
-          item.mesh.enableWorldToView = false;
-          item.mesh.objectModifiers = objectModifiers.length ? objectModifiers : undefined;
+              item.mesh.enableWorldToView = false;
+              item.mesh.enableLod = !this.activeAnimationModifier;
+              item.mesh.objectModifiers = objectModifiers.length ? objectModifiers : undefined;
           item.mesh.worldModifiers = item.baseWorldModifier ? [item.baseWorldModifier] : undefined;
           item.mesh.updateMatrixWorld(true);
           item.mesh.context?.transform?.updateFromMatrix(item.mesh.matrixWorld);
