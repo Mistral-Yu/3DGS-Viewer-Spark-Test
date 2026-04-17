@@ -190,6 +190,10 @@ function startSparkViewer() {
       animationLoadPresetButton: document.getElementById("animation-load-preset-button"),
       animationLoopCheckbox: document.getElementById("animation-loop-checkbox"),
       animationOpenButton: document.getElementById("animation-open-button"),
+      animationOriginModeSelect: document.getElementById("animation-origin-mode-select"),
+      animationOriginXInput: document.getElementById("animation-origin-x-input"),
+      animationOriginYInput: document.getElementById("animation-origin-y-input"),
+      animationOriginZInput: document.getElementById("animation-origin-z-input"),
       animationPauseButton: document.getElementById("animation-pause-button"),
       animationPlayButton: document.getElementById("animation-play-button"),
       animationPresetSelect: document.getElementById("animation-preset-select"),
@@ -1570,6 +1574,25 @@ function startSparkViewer() {
             this.activeAnimationScript.loop = this.state.animationLoop;
             this.syncAnimationEditor();
           }
+        });
+        this.dom.animationOriginModeSelect?.addEventListener("change", () => this.setAnimationOriginMode(this.dom.animationOriginModeSelect.value));
+        this.bindNumberPair({
+          input: this.dom.animationOriginXInput,
+          range: null,
+          limits: TRANSLATE_LIMITS,
+          onChange: (value) => this.setAnimationOriginAxis("x", value),
+        });
+        this.bindNumberPair({
+          input: this.dom.animationOriginYInput,
+          range: null,
+          limits: TRANSLATE_LIMITS,
+          onChange: (value) => this.setAnimationOriginAxis("y", value),
+        });
+        this.bindNumberPair({
+          input: this.dom.animationOriginZInput,
+          range: null,
+          limits: TRANSLATE_LIMITS,
+          onChange: (value) => this.setAnimationOriginAxis("z", value),
         });
         this.dom.animationLoadPresetButton?.addEventListener("click", () => this.loadAnimationPreset(this.dom.animationPresetSelect?.value || "explosion"));
         this.dom.animationCopyDefaultButton?.addEventListener("click", () => this.clearAnimationScript(true));
@@ -5344,13 +5367,12 @@ function startSparkViewer() {
               this.updatePositionModifierBounds();
             }
             item.mesh.worldModifier = createPositionColorModifier(this.positionModifierHandles);
-          } else if (itemMode === "worldNormal") {
-            item.mesh.worldModifier = createWorldNormalModifier();
-          }
-          item.mesh.updateGenerator();
-        });
+              } else if (itemMode === "worldNormal") {
+                item.mesh.worldModifier = createWorldNormalModifier();
+              }
+            });
         this.syncMeshExposure();
-        this.applyShLevel(false);
+        this.applyShLevel(true);
         this.updateNormalizeFieldState();
         this.renderPickedColors();
         if (updateChip) {
@@ -5544,6 +5566,62 @@ function startSparkViewer() {
         this.updateNormalizeFieldState();
       }
 
+      setAnimationOriginMode(mode) {
+        if (!this.activeAnimationScript) {
+          this.syncAnimationOriginControls();
+          return;
+        }
+        this.activeAnimationScript.originMode = mode === "manual" ? "manual" : "centroid";
+        this.syncAnimationEditor();
+        this.syncAnimationOriginControls();
+        if (this.state.animationApplied) {
+          this.applyActiveAnimationUniforms();
+          this.forceVisualRefresh(2);
+          this.queueSparkSceneUpdate();
+        }
+      }
+
+      setAnimationOriginAxis(axis, value) {
+        if (!this.activeAnimationScript) {
+          this.syncAnimationOriginControls();
+          return;
+        }
+        this.activeAnimationScript.originMode = "manual";
+        this.activeAnimationScript.origin[axis] = clampNumber(value, TRANSLATE_LIMITS);
+        this.syncAnimationEditor();
+        this.syncAnimationOriginControls();
+        if (this.state.animationApplied) {
+          this.applyActiveAnimationUniforms();
+          this.forceVisualRefresh(2);
+          this.queueSparkSceneUpdate();
+        }
+      }
+
+      syncAnimationOriginControls() {
+        const script = this.activeAnimationScript;
+        const originMode = script?.originMode === "manual" ? "manual" : "centroid";
+        const disabled = !script;
+        if (this.dom.animationOriginModeSelect) {
+          this.dom.animationOriginModeSelect.value = originMode;
+          this.dom.animationOriginModeSelect.disabled = disabled;
+        }
+        const x = script?.origin?.x ?? 0;
+        const y = script?.origin?.y ?? 0;
+        const z = script?.origin?.z ?? 0;
+        if (this.dom.animationOriginXInput) {
+          this.dom.animationOriginXInput.value = Number(x).toFixed(3);
+          this.dom.animationOriginXInput.disabled = disabled || originMode !== "manual";
+        }
+        if (this.dom.animationOriginYInput) {
+          this.dom.animationOriginYInput.value = Number(y).toFixed(3);
+          this.dom.animationOriginYInput.disabled = disabled || originMode !== "manual";
+        }
+        if (this.dom.animationOriginZInput) {
+          this.dom.animationOriginZInput.value = Number(z).toFixed(3);
+          this.dom.animationOriginZInput.disabled = disabled || originMode !== "manual";
+        }
+      }
+
       syncAnimationEditor() {
         if (this.dom.animationScriptEditor) {
           this.dom.animationScriptEditor.value = this.activeAnimationScript
@@ -5558,6 +5636,7 @@ function startSparkViewer() {
             ? `${this.activeAnimationScript.name} is loaded. Apply the script to animate the splats.`
             : "No animation script loaded. Use Splat Explosion, load a script, or keep animation off.";
         }
+        this.syncAnimationOriginControls();
       }
 
       syncAnimationControls(syncSlider = true) {

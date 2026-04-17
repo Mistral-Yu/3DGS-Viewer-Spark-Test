@@ -96,6 +96,10 @@
           </div>
           <div class="button-stack">
             <button class="toolbar-button toolbar-button-primary" type="button" id="open-file-button" title="Open a local .ply, .spz, .splat, or .ksplat file.">Open File</button>
+            <label class="field" title="When enabled, Spark 2.0 automatically builds 3DGS LoD data for newly loaded splats. Turn this off to keep the legacy non-LoD load path.">
+              <span>Auto LoD</span>
+              <input id="lod-auto-checkbox" type="checkbox" checked>
+            </label>
             <label class="field" title="Choose a procedural primitive to add into the scene.">
               <span>Primitive</span>
               <select id="primitive-select">
@@ -243,11 +247,6 @@
                     <option value="balanced" selected>Balanced</option>
                     <option value="sharp">Sharp</option>
                   </select>
-                </label>
-
-                <label class="field" title="When enabled, Spark 2.0 automatically builds 3DGS LoD data for newly loaded splats. Turn this off to keep the legacy non-LoD load path.">
-                  <span>Auto LoD</span>
-                  <input id="lod-auto-checkbox" type="checkbox" checked>
                 </label>
 
                 <label class="field" title="Switch the viewer background palette.">
@@ -619,6 +618,27 @@
                 <div class="button-pair">
                   <button class="toolbar-button toolbar-button-primary" type="button" id="animation-apply-button" title="Apply the script currently shown in the editor to the loaded splats.">Apply Script</button>
                   <button class="toolbar-button" type="button" id="animation-copy-default-button" title="Clear the current animation script so no animation is applied.">No Script</button>
+                </div>
+                <label class="field" title="Choose whether the active animation starts from the splat centroid or a manually specified point.">
+                  <span>Explosion Origin</span>
+                  <select id="animation-origin-mode-select">
+                    <option value="centroid" selected>Centroid</option>
+                    <option value="manual">Manual</option>
+                  </select>
+                </label>
+                <div class="transform-row">
+                  <label class="field" title="Manual animation origin X coordinate.">
+                    <span>Origin X</span>
+                    <input class="text-input" id="animation-origin-x-input" type="text" inputmode="decimal" value="0">
+                  </label>
+                  <label class="field" title="Manual animation origin Y coordinate.">
+                    <span>Y</span>
+                    <input class="text-input" id="animation-origin-y-input" type="text" inputmode="decimal" value="0">
+                  </label>
+                  <label class="field" title="Manual animation origin Z coordinate.">
+                    <span>Z</span>
+                    <input class="text-input" id="animation-origin-z-input" type="text" inputmode="decimal" value="0">
+                  </label>
                 </div>
               </div>
 

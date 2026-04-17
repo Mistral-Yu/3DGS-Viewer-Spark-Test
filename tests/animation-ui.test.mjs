@@ -29,6 +29,10 @@ test('animation tab keeps preset load beside preset and script actions in the pa
   assert.match(panel, /id="animation-preset-select"[\s\S]*id="animation-load-preset-button"/);
   assert.match(panel, /value="explosion"/);
   assert.match(panel, /value="reveal"/);
+  assert.match(panel, /id="animation-origin-mode-select"/);
+  assert.match(panel, /id="animation-origin-x-input"/);
+  assert.match(panel, /id="animation-origin-y-input"/);
+  assert.match(panel, /id="animation-origin-z-input"/);
   assert.match(panel, />Load Script</);
   assert.match(panel, />Save Script</);
   assert.match(panel, />Apply Script</);
@@ -36,10 +40,14 @@ test('animation tab keeps preset load beside preset and script actions in the pa
   assert.match(css, /\.script-editor\s*\{[\s\S]*min-height:\s*calc\(360px \* var\(--ui-scale\)\)/);
 });
 
-test('render controls expose an auto-lod toggle and viewer hud chip', () => {
-  assert.match(html, /id="lod-auto-checkbox"/);
+test('open file actions expose the auto-lod toggle beside file loading and viewer hud chip', () => {
+  const helpersMatch = html.match(/<section class="panel-section">[\s\S]*?id="open-file-button"[\s\S]*?<\/section>/);
+  assert.ok(helpersMatch, 'helpers section should exist');
+  const helpers = helpersMatch[0];
+
+  assert.match(helpers, /id="open-file-button"[\s\S]*id="lod-auto-checkbox"/);
+  assert.match(helpers, /<input id="lod-auto-checkbox" type="checkbox" checked>/);
   assert.match(html, /id="lod-chip"/);
-  assert.match(html, /<input id="lod-auto-checkbox" type="checkbox" checked>/);
   assert.match(css, /\.hud-chip-lod/);
 });
 
