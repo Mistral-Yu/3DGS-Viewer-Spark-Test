@@ -67,3 +67,12 @@ test('color tab exposes point-based linear-srgb tone curve controls', () => {
   assert.match(css, /\.tone-curve-graph/);
   assert.match(css, /\.tone-curve-point-list/);
 });
+
+test('info tab exposes post-load auto-lod and load-mode fields', () => {
+  const infoMatch = html.match(/<section class="inspector-panel" id="inspector-info"[\s\S]*?<\/section>/);
+  assert.ok(infoMatch, 'info panel should exist');
+  const panel = infoMatch[0];
+
+  assert.match(panel, /id="info-auto-lod"/);
+  assert.match(panel, /id="info-load-mode"/);
+});

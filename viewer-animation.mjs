@@ -10,11 +10,11 @@ const EXPLOSION_SCRIPT_SOURCE = `({
   origin: [0, 0, 0],
   params: {
     distanceScale: 1.1,
-    opacityPower: 0.9,
+    opacityPower: 0.65,
     scaleInfluence: 1.6,
-    speed: 1.6,
-    strength: 3.4,
-    swirl: 1.25,
+    speed: 0.6,
+    strength: 1.2,
+    swirl: 0.35,
   },
   createModifier: ({ dyno, handles }) => {
     const {
@@ -24,6 +24,7 @@ const EXPLOSION_SCRIPT_SOURCE = `({
       combineGsplat,
       cos,
       cross,
+      div,
       dynoBlock,
       dynoConst,
       length,
@@ -55,6 +56,13 @@ const EXPLOSION_SCRIPT_SOURCE = `({
       const floatZero = dynoConst('float', 0);
       const floatOne = dynoConst('float', 1);
       const burstWave = dynoConst('float', 8.0);
+      const fadeFloor = dynoConst('float', 0.42);
+      const radialBias = dynoConst('float', 0.18);
+      const radialScale = dynoConst('float', 0.065);
+      const shellBias = dynoConst('float', 0.5);
+      const swirlScale = dynoConst('float', 0.014);
+      const swirlFalloff = dynoConst('float', 0.45);
+      const burstEaseTwo = dynoConst('float', 2.0);
       const relative = sub(outputs.center, origin);
       const distanceFromOrigin = max(length(relative), epsilon);
       const direction = normalize(add(relative, epsilonVector));
@@ -64,19 +72,33 @@ const EXPLOSION_SCRIPT_SOURCE = `({
       const travel = sub(mul(mul(time, speed), scaleFactor), mul(distanceFromOrigin, distanceScale));
       const burst = clamp(travel, floatZero, floatOne);
       const fade = pow(sub(floatOne, burst), opacityPower);
-      const radialOffset = mul(direction, mul(strength, mul(add(burst, mul(burst, burst)), scaleFactor)));
+      const burstEase = mul(burst, sub(burstEaseTwo, burst));
+      const distanceEnvelope = div(distanceFromOrigin, add(distanceFromOrigin, add(scaleMagnitude, shellBias)));
+      const radialOffset = mul(
+        direction,
+        mul(
+          distanceFromOrigin,
+          mul(
+            add(radialBias, distanceEnvelope),
+            mul(strength, mul(scaleFactor, mul(radialScale, burstEase))),
+          ),
+        ),
+      );
       const swirlOffset = mul(
         tangent,
         mul(
           cos(add(mul(distanceFromOrigin, burstWave), mul(time, add(swirl, dynoConst('float', 1.5))))),
-          mul(strength, mul(swirl, burst)),
+          mul(
+            distanceFromOrigin,
+            mul(strength, mul(swirl, mul(swirlScale, mul(burstEase, sub(floatOne, mul(burst, swirlFalloff)))))),
+          ),
         ),
       );
       return {
         gsplat: combineGsplat({
           gsplat,
           center: add(outputs.center, add(radialOffset, swirlOffset)),
-          opacity: clamp(fade, floatZero, floatOne),
+          opacity: clamp(max(fade, fadeFloor), floatZero, floatOne),
         }),
       };
     });
@@ -164,11 +186,11 @@ const PRESET_DEFAULTS = {
     originMode: 'centroid',
     params: {
       distanceScale: 1.1,
-      opacityPower: 0.9,
+      opacityPower: 0.65,
       scaleInfluence: 1.6,
-      speed: 1.6,
-      strength: 3.4,
-      swirl: 1.25,
+      speed: 0.6,
+      strength: 1.2,
+      swirl: 0.35,
     },
   },
   reveal: {

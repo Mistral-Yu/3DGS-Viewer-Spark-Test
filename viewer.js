@@ -3,9 +3,10 @@ import { OrbitControls } from "./vendor/three/examples/jsm/controls/OrbitControl
 import { TransformControls } from "./vendor/three/examples/jsm/controls/TransformControls.js";
 import * as Spark from "./vendor/spark/spark.module.js";
 import { computeLayoutMode, computePanelWidths, computeShellSize, computeUiScale } from "./viewer-layout.mjs";
-import { buildLodChipLabel, buildSplatMeshLoadOptions, detectLodAvailability } from "./viewer-lod.mjs";
+import { buildLodChipLabel, buildLodInfoLabel, buildSplatMeshLoadOptions, detectLodAvailability } from "./viewer-lod.mjs";
 import {
   applyToneCurveToLinearRgb,
+  buildToneCurveSvgPathData,
   buildToneCurveState,
   getSelectedToneCurvePoint,
   insertToneCurvePoint,
@@ -151,6 +152,7 @@ function startSparkViewer() {
       gizmoScaleButton: document.getElementById("gizmo-scale-button"),
       gizmoTranslateButton: document.getElementById("gizmo-translate-button"),
       infoBounds: document.getElementById("info-bounds"),
+      infoAutoLod: document.getElementById("info-auto-lod"),
       infoCenter: document.getElementById("info-center"),
       infoCompression: document.getElementById("info-compression"),
       infoCompressionRatio: document.getElementById("info-compression-ratio"),
@@ -158,6 +160,7 @@ function startSparkViewer() {
       infoFormat: document.getElementById("info-format"),
       infoItemName: document.getElementById("info-item-name"),
       infoLoadTime: document.getElementById("info-load-time"),
+      infoLoadMode: document.getElementById("info-load-mode"),
       infoName: document.getElementById("info-name"),
       infoPackedCapacity: document.getElementById("info-packed-capacity"),
       infoScaleRange: document.getElementById("info-scale-range"),
@@ -1246,6 +1249,7 @@ function startSparkViewer() {
         this.sparkSceneDirty = false;
         this.sparkSceneUpdateQueued = false;
         this.sparkSceneUpdatePromise = null;
+        this.pendingPreviewSparkUpdate = false;
         this.postLoadRefreshHandle = 0;
         this.stageResizeObserver = null;
         this.handleViewportResize = () => {
@@ -1494,13 +1498,13 @@ function startSparkViewer() {
           input: this.dom.toneCurvePointXInput,
           range: null,
           limits: TONE_CURVE_POINT_LIMITS,
-          onChange: (value) => this.setSelectedToneCurvePointValue("x", value),
+          onChange: (value, options) => this.setSelectedToneCurvePointValue("x", value, options),
         });
         this.bindNumberPair({
           input: this.dom.toneCurvePointYInput,
           range: null,
           limits: TONE_CURVE_POINT_LIMITS,
-          onChange: (value) => this.setSelectedToneCurvePointValue("y", value),
+          onChange: (value, options) => this.setSelectedToneCurvePointValue("y", value, options),
         });
         this.bindNumberPair({
           input: this.dom.selectedExposureInput,
@@ -1890,6 +1894,10 @@ function startSparkViewer() {
             Math.round(1000 / Math.min(Number(this.state.renderFps) || 60, INTERACTION_PREVIEW_FPS)),
           );
           this.deferredPreviewHandle = window.setInterval(() => {
+            if (this.pendingPreviewSparkUpdate) {
+              this.pendingPreviewSparkUpdate = false;
+              this.queueSparkSceneUpdate();
+            }
             this.flushRenderNow();
           }, previewIntervalMs);
         }
@@ -1911,6 +1919,10 @@ function startSparkViewer() {
         if (this.deferredPreviewHandle) {
           window.clearInterval(this.deferredPreviewHandle);
           this.deferredPreviewHandle = 0;
+        }
+        if (this.pendingPreviewSparkUpdate) {
+          this.pendingPreviewSparkUpdate = false;
+          this.queueSparkSceneUpdate();
         }
         this.scheduledRenderAt = 0;
         this.lastRenderFrameAt = 0;
@@ -1970,6 +1982,7 @@ function startSparkViewer() {
             opacity: 1,
             renderMode: "beauty",
             shLevel: 3,
+            toneCurve: buildToneCurveState(),
           },
           lightExposureHandle: dynoFloat(1, `itemLightExposure-${this.sceneItemSerial}`),
           transform: {
@@ -2073,6 +2086,7 @@ function startSparkViewer() {
       syncSelectedSplatControls(syncInputs = true) {
         const item = this.getSelectedItem();
         this.state.selectedExposure = item?.settings?.exposure ?? 0;
+        this.state.toneCurve = normalizeToneCurveState(item?.settings?.toneCurve ?? buildToneCurveState());
         this.state.falloff = Number.isFinite(this.spark?.falloff)
           ? this.spark.falloff
           : item?.settings?.falloff ?? 1;
@@ -2111,6 +2125,7 @@ function startSparkViewer() {
         if (this.dom.shSelect) {
           this.dom.shSelect.value = String(this.state.shLevel);
         }
+        this.syncToneCurveUi(syncInputs);
         this.setSectionDisabled(this.dom.sceneRenderSection, !item);
         this.setSectionDisabled(this.dom.sceneTransformSection, !item);
       }
@@ -3321,13 +3336,14 @@ function startSparkViewer() {
         }
         const itemMode = this.getRenderModeForItem(item);
         const splatExposureScale = itemMode === "beauty" ? this.getBeautyExposureScaleForItem(item) : 1;
+        const toneCurve = item.settings?.toneCurve ?? buildToneCurveState();
         const linear = sample.baseLinearRgb.map((value) => Math.max(value * splatExposureScale, 0));
         if (itemMode !== "beauty" || !this.sceneLights.length) {
-          return applyToneCurveToLinearRgb(linear, this.state.toneCurve);
+          return applyToneCurveToLinearRgb(linear, toneCurve);
         }
         const worldPosition = this.getSampleWorldPosition(item, sample);
         if (!worldPosition) {
-          return applyToneCurveToLinearRgb(linear, this.state.toneCurve);
+          return applyToneCurveToLinearRgb(linear, toneCurve);
         }
         let lightSum = 0;
         this.sceneLights.forEach((light) => {
@@ -3342,7 +3358,7 @@ function startSparkViewer() {
           Math.max(linear[0] * lightMultiplier, 0),
           Math.max(linear[1] * lightMultiplier, 0),
           Math.max(linear[2] * lightMultiplier, 0),
-        ], this.state.toneCurve);
+        ], toneCurve);
       }
 
       getPickedColorDisplay(entry) {
@@ -3466,6 +3482,11 @@ function startSparkViewer() {
       bindNumberPair({ input, range, limits, onChange }) {
         const getLimits = () => (typeof limits === "function" ? limits() : limits);
         range?.addEventListener("input", (event) => onChange(event.target.value, {
+          commit: false,
+          limits: getLimits(),
+          syncInput: true,
+        }));
+        range?.addEventListener("change", (event) => onChange(event.target.value, {
           commit: true,
           limits: getLimits(),
           syncInput: true,
@@ -3827,10 +3848,19 @@ function startSparkViewer() {
       setExposure(value, { commit = true, syncInput = true } = {}) {
         this.state.exposure = commit ? clampNumber(value, EXPOSURE_LIMITS) : Number(value);
         this.applyExposure(true, syncInput);
+        if (commit) {
+          this.finishDeferredInteraction();
+        } else {
+          this.startDeferredInteraction();
+        }
       }
 
-      applyToneCurve(updateChip = true, syncInput = true) {
+      applyToneCurve(updateChip = true, syncInput = true, { commit = true } = {}) {
         this.state.toneCurve = normalizeToneCurveState(this.state.toneCurve);
+        const item = this.getSelectedItem();
+        if (item) {
+          item.settings.toneCurve = normalizeToneCurveState(this.state.toneCurve);
+        }
         this.syncToneCurveUi(syncInput);
         if (updateChip) {
           this.updateRenderChip(`Tone curve ${summarizeToneCurve(this.state.toneCurve)}`);
@@ -3841,16 +3871,22 @@ function startSparkViewer() {
         this.renderPickedColors();
         this.applyRenderMode(false);
         this.invalidateRender();
-        this.forceVisualRefresh(2);
-        this.queueSparkSceneUpdate();
+        this.forceVisualRefresh(commit ? 2 : 1);
+        if (commit) {
+          this.queueSparkSceneUpdate();
+          this.finishDeferredInteraction();
+        } else {
+          this.pendingPreviewSparkUpdate = true;
+          this.startDeferredInteraction();
+        }
       }
 
-      setSelectedToneCurvePointValue(axis, value) {
+      setSelectedToneCurvePointValue(axis, value, { commit = true } = {}) {
         const toneCurve = normalizeToneCurveState(this.state.toneCurve);
         const channel = toneCurve.activeChannel;
         const index = toneCurve.selectedPointIndices[channel];
         this.state.toneCurve = updateToneCurvePoint(toneCurve, channel, index, { [axis]: value });
-        this.applyToneCurve(true, true);
+        this.applyToneCurve(true, true, { commit });
       }
 
       syncToneCurveUi(syncInput = true) {
@@ -3912,11 +3948,10 @@ function startSparkViewer() {
         const channel = toneCurve.activeChannel;
         const selectedIndex = toneCurve.selectedPointIndices[channel];
         const curve = toneCurve.curves[channel];
-        const toSvg = (point) => `${(point.x * 100).toFixed(3)},${(100 - point.y * 100).toFixed(3)}`;
-        const pathData = curve.map(toSvg).join(" ");
+        const pathData = buildToneCurveSvgPathData(curve);
         this.dom.toneCurveGraph.innerHTML = `
           <line x1="0" y1="100" x2="100" y2="0" stroke="rgba(255,255,255,0.24)" stroke-dasharray="4 4" />
-          <polyline points="${pathData}" fill="none" stroke="rgba(127,240,215,0.95)" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round" />
+          <path d="${pathData}" fill="none" stroke="rgba(127,240,215,0.95)" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round" />
           ${curve.map((point, index) => {
             const cx = (point.x * 100).toFixed(3);
             const cy = (100 - point.y * 100).toFixed(3);
@@ -3966,7 +4001,7 @@ function startSparkViewer() {
           this.toneCurvePointerDrag.index,
           { x, y },
         );
-        this.applyToneCurve(false, true);
+        this.applyToneCurve(false, true, { commit: false });
       }
 
       stopToneCurvePointDrag() {
@@ -3974,7 +4009,7 @@ function startSparkViewer() {
           return;
         }
         this.toneCurvePointerDrag = null;
-        this.applyToneCurve(true, true);
+        this.applyToneCurve(true, true, { commit: true });
       }
 
       applySelectedExposure(updateChip = true, syncInput = true) {
@@ -4003,6 +4038,11 @@ function startSparkViewer() {
       setSelectedExposure(value, { commit = true, syncInput = true } = {}) {
         this.state.selectedExposure = commit ? clampNumber(value, EXPOSURE_LIMITS) : Number(value);
         this.applySelectedExposure(true, syncInput);
+        if (commit) {
+          this.finishDeferredInteraction();
+        } else {
+          this.startDeferredInteraction();
+        }
       }
 
       syncMeshExposure() {
@@ -5345,6 +5385,7 @@ function startSparkViewer() {
           item.mesh.enableLod = !animationModifier;
           item.mesh.objectModifiers = objectModifiers.length ? objectModifiers : undefined;
           item.mesh.covObjectModifiers = item.mesh.objectModifiers;
+          item.mesh.worldModifier = undefined;
           item.mesh.worldModifiers = item.baseWorldModifier ? [item.baseWorldModifier] : undefined;
           item.mesh.covWorldModifiers = item.mesh.worldModifiers;
           item.mesh.updateMatrixWorld(true);
@@ -5364,8 +5405,8 @@ function startSparkViewer() {
                 lightPositions: this.lightHandles.positions,
               }));
             }
-            if (!isNeutralToneCurve(this.state.toneCurve)) {
-              worldModifiers.push(createToneCurveColorModifier(this.state.toneCurve));
+            if (item.id === this.selectedSceneItemId && !isNeutralToneCurve(item.settings.toneCurve)) {
+              worldModifiers.push(createToneCurveColorModifier(item.settings.toneCurve));
             }
             item.mesh.worldModifiers = worldModifiers.length ? worldModifiers : undefined;
             item.mesh.covWorldModifiers = item.mesh.worldModifiers;
@@ -5386,7 +5427,7 @@ function startSparkViewer() {
             item.mesh.worldModifier = createWorldNormalModifier();
             item.mesh.covWorldModifiers = undefined;
           }
-            });
+        });
         this.syncMeshExposure();
         this.applyShLevel(true);
         this.updateNormalizeFieldState();
@@ -5546,6 +5587,8 @@ function startSparkViewer() {
 
       updateMetaUi() {
         const center = this.centerBoundsSphere?.center ?? this.boundsSphere?.center ?? null;
+        const selectedItem = this.getSelectedItem();
+        const lodActive = detectLodAvailability(selectedItem?.mesh);
         if (this.dom.infoItemName) {
           this.dom.infoItemName.textContent = this.modelMeta.name;
         }
@@ -5563,6 +5606,11 @@ function startSparkViewer() {
         this.dom.infoBounds.textContent = this.bounds
           ? formatVector(this.bounds.getSize(new THREE.Vector3()))
           : "-";
+        this.dom.infoAutoLod.textContent = this.state.autoLodEnabled ? "Enabled" : "Disabled";
+        this.dom.infoLoadMode.textContent = buildLodInfoLabel({
+          autoLodEnabled: this.state.autoLodEnabled,
+          lodActive,
+        });
         this.dom.infoScaleRange.textContent = this.modelMeta.scaleRange;
         this.dom.infoShDegree.textContent = this.modelMeta.shDegree;
         this.dom.infoShActive.textContent = this.modelMeta.activeSh;

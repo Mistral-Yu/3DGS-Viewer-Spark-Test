@@ -43,6 +43,62 @@ const normalizeCurvePoints = (points) => {
 
 const buildIdentityCurve = () => [{ x: 0, y: 0 }, { x: 1, y: 1 }];
 
+const sameSign = (left, right) => (left === 0 || right === 0 ? left === right : Math.sign(left) === Math.sign(right));
+
+const computeSegmentData = (points) => {
+  const curve = normalizeCurvePoints(points);
+  if (curve.length === 2) {
+    const slope = (curve[1].y - curve[0].y) / Math.max(curve[1].x - curve[0].x, MIN_POINT_GAP);
+    return {
+      curve,
+      tangents: [slope, slope],
+    };
+  }
+
+  const spans = [];
+  const slopes = [];
+  for (let index = 0; index < curve.length - 1; index += 1) {
+    const span = Math.max(curve[index + 1].x - curve[index].x, MIN_POINT_GAP);
+    spans.push(span);
+    slopes.push((curve[index + 1].y - curve[index].y) / span);
+  }
+
+  const tangents = new Array(curve.length).fill(0);
+  tangents[0] = ((2 * spans[0] + spans[1]) * slopes[0] - spans[0] * slopes[1]) / (spans[0] + spans[1]);
+  if (!sameSign(tangents[0], slopes[0])) {
+    tangents[0] = 0;
+  } else if (!sameSign(slopes[0], slopes[1]) && Math.abs(tangents[0]) > Math.abs(3 * slopes[0])) {
+    tangents[0] = 3 * slopes[0];
+  }
+
+  for (let index = 1; index < curve.length - 1; index += 1) {
+    const previousSlope = slopes[index - 1];
+    const nextSlope = slopes[index];
+    if (previousSlope === 0 || nextSlope === 0 || !sameSign(previousSlope, nextSlope)) {
+      tangents[index] = 0;
+      continue;
+    }
+    const previousSpan = spans[index - 1];
+    const nextSpan = spans[index];
+    const weightA = (2 * nextSpan) + previousSpan;
+    const weightB = nextSpan + (2 * previousSpan);
+    tangents[index] = (weightA + weightB) / ((weightA / previousSlope) + (weightB / nextSlope));
+  }
+
+  const lastSlope = slopes.at(-1);
+  const previousSlope = slopes.at(-2);
+  const lastSpan = spans.at(-1);
+  const previousSpan = spans.at(-2);
+  tangents[curve.length - 1] = ((2 * lastSpan + previousSpan) * lastSlope - lastSpan * previousSlope) / (lastSpan + previousSpan);
+  if (!sameSign(tangents[curve.length - 1], lastSlope)) {
+    tangents[curve.length - 1] = 0;
+  } else if (!sameSign(lastSlope, previousSlope) && Math.abs(tangents[curve.length - 1]) > Math.abs(3 * lastSlope)) {
+    tangents[curve.length - 1] = 3 * lastSlope;
+  }
+
+  return { curve, tangents };
+};
+
 const cloneCurveMap = (curves = {}) => Object.fromEntries(
   TONE_CURVE_CHANNELS.map((channel) => [channel, normalizeCurvePoints(curves[channel])]),
 );
@@ -102,17 +158,53 @@ export function getSelectedToneCurvePoint(state, channel = null) {
 }
 
 export function sampleToneCurveChannel(points, value) {
-  const curve = normalizeCurvePoints(points);
+  const { curve, tangents } = computeSegmentData(points);
   const x = clamp01(value);
-  let y = curve[0].y;
+  for (let index = 0; index < curve.length - 1; index += 1) {
+    const start = curve[index];
+    const end = curve[index + 1];
+    if (x > end.x && index < curve.length - 2) {
+      continue;
+    }
+    const span = Math.max(end.x - start.x, MIN_POINT_GAP);
+    const t = Math.min(Math.max((x - start.x) / span, 0), 1);
+    const t2 = t * t;
+    const t3 = t2 * t;
+    const h00 = (2 * t3) - (3 * t2) + 1;
+    const h10 = t3 - (2 * t2) + t;
+    const h01 = (-2 * t3) + (3 * t2);
+    const h11 = t3 - t2;
+    const y = (h00 * start.y)
+      + (h10 * span * tangents[index])
+      + (h01 * end.y)
+      + (h11 * span * tangents[index + 1]);
+    return clamp01(y);
+  }
+  return clamp01(curve.at(-1)?.y ?? 1);
+}
+
+export function buildToneCurveSvgPathData(points) {
+  const { curve, tangents } = computeSegmentData(points);
+  const toSvgX = (value) => (value * 100).toFixed(3);
+  const toSvgY = (value) => (100 - (value * 100)).toFixed(3);
+  const commands = [`M ${toSvgX(curve[0].x)} ${toSvgY(curve[0].y)}`];
   for (let index = 0; index < curve.length - 1; index += 1) {
     const start = curve[index];
     const end = curve[index + 1];
     const span = Math.max(end.x - start.x, MIN_POINT_GAP);
-    const local = Math.min(Math.max(x - start.x, 0), span);
-    y += ((end.y - start.y) / span) * local;
+    const controlA = {
+      x: start.x + (span / 3),
+      y: clamp01(start.y + ((span * tangents[index]) / 3)),
+    };
+    const controlB = {
+      x: end.x - (span / 3),
+      y: clamp01(end.y - ((span * tangents[index + 1]) / 3)),
+    };
+    commands.push(
+      `C ${toSvgX(controlA.x)} ${toSvgY(controlA.y)} ${toSvgX(controlB.x)} ${toSvgY(controlB.y)} ${toSvgX(end.x)} ${toSvgY(end.y)}`,
+    );
   }
-  return clamp01(y);
+  return commands.join(' ');
 }
 
 export function insertToneCurvePoint(state, channel = null, point = {}) {
@@ -198,11 +290,28 @@ export function isNeutralToneCurve(state) {
   });
 }
 
+const evaluateToneCurveLinear = (points, value) => {
+  const curve = normalizeCurvePoints(points);
+  const x = clamp01(value);
+  let result = curve[0]?.y ?? 0;
+  for (let index = 0; index < curve.length - 1; index += 1) {
+    const start = curve[index];
+    const end = curve[index + 1];
+    const span = Math.max(end.x - start.x, MIN_POINT_GAP);
+    const segment = Math.min(Math.max(x - start.x, 0), span);
+    result += segment * ((end.y - start.y) / span);
+  }
+  return clamp01(result);
+};
+
 export function applyToneCurveToLinearRgb(linearRgb, state) {
   const normalized = normalizeToneCurveState(state);
   const [r = 0, g = 0, b = 0] = Array.isArray(linearRgb) ? linearRgb : [0, 0, 0];
   const masterCurve = normalized.curves.master;
-  const applyChannel = (value, channel) => sampleToneCurveChannel(normalized.curves[channel], sampleToneCurveChannel(masterCurve, value));
+  const applyChannel = (value, channel) => evaluateToneCurveLinear(
+    normalized.curves[channel],
+    evaluateToneCurveLinear(masterCurve, value),
+  );
   return [
     applyChannel(r, 'red'),
     applyChannel(g, 'green'),

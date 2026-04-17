@@ -3,11 +3,13 @@ import assert from 'node:assert/strict';
 
 import {
   applyToneCurveToLinearRgb,
+  buildToneCurveSvgPathData,
   buildToneCurveState,
   getSelectedToneCurvePoint,
   insertToneCurvePoint,
   isNeutralToneCurve,
   removeToneCurvePoint,
+  sampleToneCurveChannel,
   setToneCurveActiveChannel,
   setToneCurveSelectedPoint,
   updateToneCurvePoint,
@@ -72,4 +74,27 @@ test('channel selection helpers track the active curve editor state', () => {
 
   assert.equal(state.activeChannel, 'red');
   assert.deepEqual(getSelectedToneCurvePoint(state), { x: 0.6, y: 0.5 });
+});
+
+test('sampleToneCurveChannel uses smooth monotone interpolation instead of straight segments through interior points', () => {
+  const points = [
+    { x: 0, y: 0 },
+    { x: 0.3, y: 0.05 },
+    { x: 0.7, y: 0.55 },
+    { x: 1, y: 1 },
+  ];
+
+  assert.notEqual(Number(sampleToneCurveChannel(points, 0.5).toFixed(6)), 0.3);
+});
+
+test('buildToneCurveSvgPathData emits a cubic path that matches the evaluated curve endpoints', () => {
+  const path = buildToneCurveSvgPathData([
+    { x: 0, y: 0 },
+    { x: 0.35, y: 0.1 },
+    { x: 0.7, y: 0.9 },
+    { x: 1, y: 1 },
+  ]);
+
+  assert.match(path, /^M 0\.000 100\.000 C /);
+  assert.match(path, /100\.000 0\.000$/);
 });

@@ -26,3 +26,8 @@ export function buildLodChipLabel({ autoLodEnabled, lodActive }) {
   }
   return `${mode} / Active`;
 }
+
+export function buildLodInfoLabel({ autoLodEnabled, lodActive }) {
+  const mode = autoLodEnabled ? 'Auto-LoD enabled' : 'Auto-LoD disabled';
+  return `${mode} / ${lodActive ? 'LoD data active' : 'Full-res only'}`;
+}
