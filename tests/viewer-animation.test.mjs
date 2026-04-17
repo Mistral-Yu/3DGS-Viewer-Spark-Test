@@ -12,19 +12,18 @@ import {
   shouldRenderAnimationFrame,
 } from '../viewer-animation.mjs';
 
-test('only the explosion preset remains built in', () => {
-  assert.deepEqual(Object.keys(ANIMATION_PRESET_LIBRARY), ['explosion']);
-  const presetSource = getAnimationPresetScriptText('explosion');
-  assert.match(presetSource, /createModifier/);
+test('built-in presets include explosion and reveal scripts', () => {
+  assert.deepEqual(Object.keys(ANIMATION_PRESET_LIBRARY), ['explosion', 'reveal']);
 
-  const parsed = parseAnimationScript(presetSource);
+  const explosion = parseAnimationScript(getAnimationPresetScriptText('explosion'));
+  const reveal = parseAnimationScript(getAnimationPresetScriptText('reveal'));
 
-  assert.equal(parsed.name, DEFAULT_ANIMATION_SCRIPT_NAME);
-  assert.equal(parsed.preset, 'explosion');
-  assert.equal(parsed.loop, true);
-  assert.ok(parsed.duration > 0);
-  assert.ok(parsed.params.strength > 0);
-  assert.equal(typeof parsed.createModifier, 'function');
+  assert.equal(explosion.name, DEFAULT_ANIMATION_SCRIPT_NAME);
+  assert.equal(explosion.preset, 'explosion');
+  assert.equal(explosion.originMode, 'centroid');
+  assert.equal(reveal.preset, 'reveal');
+  assert.equal(reveal.originMode, 'centroid');
+  assert.equal(typeof reveal.createModifier, 'function');
 });
 
 test('legacy diffusion scripts are rejected instead of being silently remapped', () => {
@@ -34,12 +33,13 @@ test('legacy diffusion scripts are rejected instead of being silently remapped',
   );
 });
 
-test('parseAnimationScript clamps numeric parameters and keeps origin vector', () => {
+test('parseAnimationScript clamps numeric parameters and keeps manual origin vectors', () => {
   const parsed = parseAnimationScript(`({
     name: 'Custom Burst',
     preset: 'explosion',
     loop: false,
     duration: 12,
+    originMode: 'manual',
     origin: [1, 2, 3],
     params: {
       distanceScale: -4,
@@ -52,6 +52,7 @@ test('parseAnimationScript clamps numeric parameters and keeps origin vector', (
     createModifier: ({ handles }) => handles.speed,
   })`);
 
+  assert.equal(parsed.originMode, 'manual');
   assert.deepEqual(parsed.origin, { x: 1, y: 2, z: 3 });
   assert.equal(parsed.loop, false);
   assert.equal(parsed.params.distanceScale, 0);
@@ -68,7 +69,6 @@ test('parseAnimationScript rejects scripts without movement code', () => {
       preset: 'explosion',
       duration: 2,
       loop: true,
-      origin: [0, 0, 0],
       params: { speed: 1 }
     })`),
     /createModifier/,

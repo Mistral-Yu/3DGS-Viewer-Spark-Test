@@ -6,6 +6,7 @@ const EXPLOSION_SCRIPT_SOURCE = `({
   preset: 'explosion',
   duration: 3.2,
   loop: true,
+  originMode: 'centroid',
   origin: [0, 0, 0],
   params: {
     distanceScale: 1.1,
@@ -82,8 +83,75 @@ const EXPLOSION_SCRIPT_SOURCE = `({
   },
 })`;
 
+const REVEAL_SCRIPT_SOURCE = `({
+  version: 1,
+  name: 'Splat Reveal',
+  preset: 'reveal',
+  duration: 3.6,
+  loop: true,
+  originMode: 'centroid',
+  origin: [0, 0, 0],
+  params: {
+    distanceScale: 0.85,
+    opacityPower: 1.15,
+    scaleInfluence: 0.8,
+    speed: 1.0,
+    strength: 1.5,
+    swirl: 0.2,
+  },
+  createModifier: ({ dyno, handles }) => {
+    const {
+      Gsplat,
+      add,
+      clamp,
+      combineGsplat,
+      dynoBlock,
+      dynoConst,
+      length,
+      max = dyno.Max,
+      mul,
+      pow,
+      splitGsplat,
+      sub,
+    } = dyno;
+    const {
+      distanceScale,
+      epsilon,
+      opacityPower,
+      origin,
+      scaleInfluence,
+      speed,
+      strength,
+      time,
+    } = handles;
+    return dynoBlock({ gsplat: Gsplat }, { gsplat: Gsplat }, ({ gsplat }) => {
+      if (!gsplat) {
+        throw new Error('No gsplat input');
+      }
+      const outputs = splitGsplat(gsplat).outputs;
+      const floatZero = dynoConst('float', 0);
+      const floatOne = dynoConst('float', 1);
+      const relative = sub(outputs.center, origin);
+      const distanceFromOrigin = max(length(relative), epsilon);
+      const scaleMagnitude = max(length(outputs.scales), epsilon);
+      const revealEdge = sub(mul(mul(time, speed), add(floatOne, mul(scaleMagnitude, scaleInfluence))), mul(distanceFromOrigin, distanceScale));
+      const reveal = clamp(revealEdge, floatZero, floatOne);
+      const opacity = pow(reveal, opacityPower);
+      const drift = mul(relative, mul(sub(floatOne, reveal), mul(strength, dynoConst('float', 0.12))));
+      return {
+        gsplat: combineGsplat({
+          gsplat,
+          center: sub(outputs.center, drift),
+          opacity: opacity,
+        }),
+      };
+    });
+  },
+})`;
+
 const PRESET_SCRIPT_LIBRARY = {
   explosion: EXPLOSION_SCRIPT_SOURCE,
+  reveal: REVEAL_SCRIPT_SOURCE,
 };
 
 export const ANIMATION_PRESET_LIBRARY = PRESET_SCRIPT_LIBRARY;
@@ -93,6 +161,7 @@ const PRESET_DEFAULTS = {
     duration: 3.2,
     loop: true,
     origin: [0, 0, 0],
+    originMode: 'centroid',
     params: {
       distanceScale: 1.1,
       opacityPower: 0.9,
@@ -100,6 +169,20 @@ const PRESET_DEFAULTS = {
       speed: 1.6,
       strength: 3.4,
       swirl: 1.25,
+    },
+  },
+  reveal: {
+    duration: 3.6,
+    loop: true,
+    origin: [0, 0, 0],
+    originMode: 'centroid',
+    params: {
+      distanceScale: 0.85,
+      opacityPower: 1.15,
+      scaleInfluence: 0.8,
+      speed: 1,
+      strength: 1.5,
+      swirl: 0.2,
     },
   },
 };
@@ -124,6 +207,13 @@ const normalizeOrigin = (origin) => {
     y: round(Number(values[1]) || 0),
     z: round(Number(values[2]) || 0),
   };
+};
+
+const normalizeOriginMode = (value, fallback = 'manual') => {
+  if (value === 'centroid' || value === 'manual') {
+    return value;
+  }
+  return fallback;
 };
 
 const normalizeParams = (params = {}, defaults = {}) => {
@@ -156,12 +246,14 @@ const normalizeAnimationConfig = (source) => {
   }
   const preset = source.preset ?? 'explosion';
   const presetDefaults = PRESET_DEFAULTS[preset];
+  const originMode = normalizeOriginMode(source.originMode, presetDefaults.originMode ?? 'manual');
   return {
     createModifier: source.createModifier,
     duration: round(clamp(Number(source.duration) || presetDefaults.duration, 0.1, 120), 3),
     loop: source.loop !== false,
     name: String(source.name || DEFAULT_ANIMATION_SCRIPT_NAME).trim() || DEFAULT_ANIMATION_SCRIPT_NAME,
     origin: normalizeOrigin(source.origin ?? presetDefaults.origin),
+    originMode,
     params: normalizeParams(source.params, presetDefaults.params),
     preset,
     version: 1,
@@ -183,6 +275,7 @@ export function serializeAnimationScript(config) {
   preset: ${JSON.stringify(parsed.preset)},
   duration: ${parsed.duration},
   loop: ${parsed.loop},
+  originMode: ${JSON.stringify(parsed.originMode || 'manual')},
   origin: ${originSource},
   params: ${paramsSource},
   createModifier: ${modifierSource},
@@ -221,8 +314,8 @@ export function createDefaultAnimationPlaybackState(script) {
   };
 }
 
-export function shouldRenderAnimationFrame({ animationApplied, animationPlaying }) {
-  return Boolean(animationApplied && animationPlaying);
+export function shouldRenderAnimationFrame(state) {
+  return Boolean(state?.animationApplied && state?.animationPlaying);
 }
 
 export function canPlayAnimation({ animationApplied, hasModifier }) {

@@ -96,6 +96,10 @@
           </div>
           <div class="button-stack">
             <button class="toolbar-button toolbar-button-primary" type="button" id="open-file-button" title="Open a local .ply, .spz, .splat, or .ksplat file.">Open File</button>
+            <label class="field" title="When enabled, Spark 2.0 automatically builds 3DGS LoD data for newly loaded splats. Turn this off to keep the legacy non-LoD load path.">
+              <span>Auto LoD</span>
+              <input id="lod-auto-checkbox" type="checkbox" checked>
+            </label>
             <label class="field" title="Choose a procedural primitive to add into the scene.">
               <span>Primitive</span>
               <select id="primitive-select">
@@ -152,6 +156,7 @@
             </div>
             <div class="hud-cluster">
               <span class="hud-chip" id="fps-chip">FPS -</span>
+              <span class="hud-chip hud-chip-lod" id="lod-chip">LOD Auto On</span>
               <span class="hud-chip hud-chip-wide" id="hover-chip" title="Topmost hovered splat values in sRGB display space.">
                 <span class="hover-chip-item" id="hover-chip-item">Item -</span>
                 <span class="hover-chip-sep"> | </span>
@@ -459,6 +464,42 @@
                     <input class="text-input short-input" id="exposure-input" type="text" inputmode="decimal" value="0.0">
                   </div>
                 </label>
+                <div class="field-stack compact-fields tone-curve-panel">
+                  <div class="section-heading section-heading-sub">
+                    <p class="section-label">Color</p>
+                    <h2>Tone Curve</h2>
+                  </div>
+                  <p class="progress-label">Edit a point-based tone curve in linear sRGB. Master affects all channels, then Red / Green / Blue can be shaped individually.</p>
+                  <label class="field" title="Choose which linear sRGB curve to edit.">
+                    <span>Edit Channel</span>
+                    <select id="tone-curve-channel-select">
+                      <option value="master" selected>Master</option>
+                      <option value="red">Red</option>
+                      <option value="green">Green</option>
+                      <option value="blue">Blue</option>
+                    </select>
+                  </label>
+                  <div class="tone-curve-editor">
+                    <svg class="tone-curve-graph" id="tone-curve-graph" viewBox="0 0 100 100" role="img" aria-label="Tone curve graph"></svg>
+                    <div class="tone-curve-toolbar">
+                      <div class="button-pair button-pair-compact">
+                        <button class="toolbar-button" type="button" id="tone-curve-add-point-button" title="Add a new control point near the center of the active curve.">Add Point</button>
+                        <button class="toolbar-button" type="button" id="tone-curve-remove-point-button" title="Remove the selected control point from the active curve.">Remove Point</button>
+                      </div>
+                      <div class="transform-row transform-row-dual">
+                        <label class="field" title="Selected point input position on the tone curve.">
+                          <span>Point X</span>
+                          <input class="text-input" id="tone-curve-point-x-input" type="text" inputmode="decimal" value="1.000">
+                        </label>
+                        <label class="field" title="Selected point output value on the tone curve.">
+                          <span>Point Y</span>
+                          <input class="text-input" id="tone-curve-point-y-input" type="text" inputmode="decimal" value="1.000">
+                        </label>
+                      </div>
+                      <div class="tone-curve-point-list" id="tone-curve-point-list" aria-live="polite"></div>
+                    </div>
+                  </div>
+                </div>
               </div>
               <div class="field-stack">
                 <div class="section-heading section-heading-sub">
@@ -565,6 +606,7 @@
                   <div class="field-inline field-inline-actions">
                     <select id="animation-preset-select">
                       <option value="explosion" selected>Splat Explosion</option>
+                      <option value="reveal">Splat Reveal</option>
                     </select>
                     <button class="toolbar-button" type="button" id="animation-load-preset-button" title="Load the selected preset into the script editor.">Load Preset</button>
                   </div>
@@ -576,6 +618,27 @@
                 <div class="button-pair">
                   <button class="toolbar-button toolbar-button-primary" type="button" id="animation-apply-button" title="Apply the script currently shown in the editor to the loaded splats.">Apply Script</button>
                   <button class="toolbar-button" type="button" id="animation-copy-default-button" title="Clear the current animation script so no animation is applied.">No Script</button>
+                </div>
+                <label class="field" title="Choose whether the active animation starts from the splat centroid or a manually specified point.">
+                  <span>Explosion Origin</span>
+                  <select id="animation-origin-mode-select">
+                    <option value="centroid" selected>Centroid</option>
+                    <option value="manual">Manual</option>
+                  </select>
+                </label>
+                <div class="transform-row">
+                  <label class="field" title="Manual animation origin X coordinate.">
+                    <span>Origin X</span>
+                    <input class="text-input" id="animation-origin-x-input" type="text" inputmode="decimal" value="0">
+                  </label>
+                  <label class="field" title="Manual animation origin Y coordinate.">
+                    <span>Y</span>
+                    <input class="text-input" id="animation-origin-y-input" type="text" inputmode="decimal" value="0">
+                  </label>
+                  <label class="field" title="Manual animation origin Z coordinate.">
+                    <span>Z</span>
+                    <input class="text-input" id="animation-origin-z-input" type="text" inputmode="decimal" value="0">
+                  </label>
                 </div>
               </div>
 
