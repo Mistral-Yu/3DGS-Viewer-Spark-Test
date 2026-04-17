@@ -5316,8 +5316,17 @@ function startSparkViewer() {
         this.updateModeUi();
       }
 
+      shouldAttachAnimationModifier() {
+        return Boolean(
+          this.activeAnimationModifier
+          && this.state.animationApplied
+          && (this.state.animationPlaying || this.state.animationTime > 0),
+        );
+      }
+
       applyRenderMode(updateChip = true) {
         this.syncLightingRuntimeState();
+        const animationModifier = this.shouldAttachAnimationModifier() ? this.activeAnimationModifier : null;
         this.sceneItems.forEach((item) => {
           if (!item.mesh) {
             return;
@@ -5329,13 +5338,15 @@ function startSparkViewer() {
           if (item.baseObjectModifier) {
             objectModifiers.push(item.baseObjectModifier);
           }
-          if (this.activeAnimationModifier) {
-            objectModifiers.push(this.activeAnimationModifier);
+          if (animationModifier) {
+            objectModifiers.push(animationModifier);
           }
-              item.mesh.enableWorldToView = false;
-              item.mesh.enableLod = !this.activeAnimationModifier;
-              item.mesh.objectModifiers = objectModifiers.length ? objectModifiers : undefined;
+          item.mesh.enableWorldToView = false;
+          item.mesh.enableLod = !animationModifier;
+          item.mesh.objectModifiers = objectModifiers.length ? objectModifiers : undefined;
+          item.mesh.covObjectModifiers = item.mesh.objectModifiers;
           item.mesh.worldModifiers = item.baseWorldModifier ? [item.baseWorldModifier] : undefined;
+          item.mesh.covWorldModifiers = item.mesh.worldModifiers;
           item.mesh.updateMatrixWorld(true);
           item.mesh.context?.transform?.updateFromMatrix(item.mesh.matrixWorld);
           if (itemMode === "beauty") {
@@ -5357,20 +5368,24 @@ function startSparkViewer() {
               worldModifiers.push(createToneCurveColorModifier(this.state.toneCurve));
             }
             item.mesh.worldModifiers = worldModifiers.length ? worldModifiers : undefined;
+            item.mesh.covWorldModifiers = item.mesh.worldModifiers;
           } else if (itemMode === "depth") {
             item.mesh.enableWorldToView = true;
             item.mesh.worldModifier = createDepthColorModifier(
               this.depthModifierHandles,
               item.mesh.context.worldToView,
             );
+            item.mesh.covWorldModifiers = undefined;
           } else if (itemMode === "position") {
             if (item.id === this.selectedSceneItemId) {
               this.updatePositionModifierBounds();
             }
             item.mesh.worldModifier = createPositionColorModifier(this.positionModifierHandles);
-              } else if (itemMode === "worldNormal") {
-                item.mesh.worldModifier = createWorldNormalModifier();
-              }
+            item.mesh.covWorldModifiers = undefined;
+          } else if (itemMode === "worldNormal") {
+            item.mesh.worldModifier = createWorldNormalModifier();
+            item.mesh.covWorldModifiers = undefined;
+          }
             });
         this.syncMeshExposure();
         this.applyShLevel(true);
@@ -5806,6 +5821,7 @@ function startSparkViewer() {
         this.state.animationPlaying = true;
         this.lastAnimationTickAt = performance.now();
         this.markRenderActivity(10_000);
+        this.applyRenderMode(false);
         this.forceVisualRefresh(2);
         this.queueSparkSceneUpdate();
         this.syncAnimationControls(true);
@@ -5814,6 +5830,7 @@ function startSparkViewer() {
 
       pauseAnimation() {
         this.state.animationPlaying = false;
+        this.applyRenderMode(false);
         this.syncAnimationControls(true);
         this.updateStatus(`Paused ${this.activeAnimationScript?.name || "animation"}`);
       }
@@ -5822,6 +5839,7 @@ function startSparkViewer() {
         this.pauseAnimation();
         this.state.animationTime = 0;
         this.animationModifierHandles.time.value = 0;
+        this.applyRenderMode(false);
         this.syncAnimationControls(true);
         this.forceVisualRefresh(2);
         this.queueSparkSceneUpdate();
@@ -5838,6 +5856,7 @@ function startSparkViewer() {
         if (commit) {
           this.state.animationPlaying = false;
         }
+        this.applyRenderMode(false);
         this.syncAnimationControls(true);
         this.forceVisualRefresh(commit ? 3 : 1);
         if (this.state.animationApplied) {
