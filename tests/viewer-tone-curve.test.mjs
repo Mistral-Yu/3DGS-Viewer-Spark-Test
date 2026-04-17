@@ -47,7 +47,7 @@ test('insertToneCurvePoint keeps the clicked graph position instead of resamplin
   ]);
 });
 
-test('updateToneCurvePoint clamps edited points between neighbours while preserving fixed endpoints', () => {
+test('updateToneCurvePoint clamps edited interior points between neighbours', () => {
   const base = insertToneCurvePoint(buildToneCurveState(), 'master', { x: 0.4, y: 0.4 });
   const updated = updateToneCurvePoint(base, 'master', 1, { x: 2, y: -1 });
 
@@ -58,12 +58,26 @@ test('updateToneCurvePoint clamps edited points between neighbours while preserv
   ]);
 });
 
-test('removeToneCurvePoint deletes only non-endpoint points and falls back to identity when cleared', () => {
+test('updateToneCurvePoint lets the first and last curve points move through numeric edits while keeping ordering intact', () => {
+  let state = buildToneCurveState();
+  state = insertToneCurvePoint(state, 'master', { x: 0.6, y: 0.7 });
+  state = updateToneCurvePoint(state, 'master', 0, { x: 0.55, y: 0.2 });
+  state = updateToneCurvePoint(state, 'master', 2, { x: 0.58, y: 0.8 });
+
+  assert.deepEqual(state.curves.master, [
+    { x: 0.55, y: 0.2 },
+    { x: 0.6, y: 0.7 },
+    { x: 0.601, y: 0.8 },
+  ]);
+});
+
+test('removeToneCurvePoint deletes only non-endpoint points and keeps endpoints protected', () => {
   const base = insertToneCurvePoint(buildToneCurveState(), 'blue', { x: 0.7, y: 0.9 });
   const removed = removeToneCurvePoint(base, 'blue', 1);
 
   assert.deepEqual(removed.curves.blue, [{ x: 0, y: 0 }, { x: 1, y: 1 }]);
   assert.deepEqual(removeToneCurvePoint(removed, 'blue', 0), removed);
+  assert.deepEqual(removeToneCurvePoint(removed, 'blue', 1), removed);
 });
 
 test('findNearestRemovableToneCurvePointIndex removes only interior points near the clicked graph position', () => {

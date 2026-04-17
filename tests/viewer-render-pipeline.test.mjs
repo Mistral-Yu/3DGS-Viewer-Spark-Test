@@ -31,6 +31,15 @@ test('tone curve graph supports direct left-click add and right-click remove wit
   assert.match(source, /handleToneCurveGraphContextMenu\(event\)\s*\{[\s\S]*findNearestRemovableToneCurvePointIndex\([\s\S]*removeToneCurvePoint\(this\.state\.toneCurve,\s*channel,\s*index\)/);
 });
 
+test('tone curve endpoint editing stays enabled for point inputs and graph dragging while deletion remains protected', () => {
+  assert.match(source, /setSelectedToneCurvePointValue\(axis, value, \{ commit = true \} = \{\}\) \{[\s\S]*updateToneCurvePoint\(toneCurve,\s*channel,\s*index,\s*\{ \[axis\]: value \}\)/);
+  assert.doesNotMatch(source, /this\.dom\.toneCurvePointXInput\.disabled = isEndpoint/);
+  assert.doesNotMatch(source, /this\.dom\.toneCurvePointYInput\.disabled = isEndpoint/);
+  assert.match(source, /this\.dom\.toneCurveRemovePointButton\.disabled = isEndpoint/);
+  assert.doesNotMatch(source, /startToneCurvePointDrag\(index, event\)\s*\{[\s\S]*if \(index <= 0 \|\| !this\.dom\.toneCurveGraph\)/);
+  assert.doesNotMatch(source, /startToneCurvePointDrag\(index, event\)\s*\{[\s\S]*if \(index >= toneCurve\.curves\[channel\]\.length - 1\)/);
+});
+
 test('exposure and tone-curve edits use deferred low-fps preview while inputs are active', () => {
   assert.match(source, /setExposure\(value, \{ commit = true, syncInput = true \} = \{\}\) \{[\s\S]*if \(commit\) \{[\s\S]*this\.finishDeferredInteraction\(\);[\s\S]*\} else \{[\s\S]*this\.startDeferredInteraction\(\);/);
   assert.match(source, /setSelectedExposure\(value, \{ commit = true, syncInput = true \} = \{\}\) \{[\s\S]*if \(commit\) \{[\s\S]*this\.finishDeferredInteraction\(\);[\s\S]*\} else \{[\s\S]*this\.startDeferredInteraction\(\);/);

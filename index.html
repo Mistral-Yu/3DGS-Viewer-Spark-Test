@@ -192,7 +192,6 @@
           <div class="section-heading">
             <p class="section-label">Inspector</p>
             <div class="section-title-row">
-              <h2>Splats / Color / Light / Animation / Info / Export</h2>
               <span
                 class="hint-badge"
                 title="Switch tabs to manage scene items, apply color grading, inspect metadata, or export splats."
@@ -214,7 +213,6 @@
               <div class="field-stack">
                 <div class="section-heading section-heading-sub">
                   <p class="section-label">Splats</p>
-                  <h2>Items</h2>
                 </div>
                 <div class="scene-controls-row">
                   <label class="field" title="Limit how many scene rows are visible before the item list starts scrolling.">
@@ -238,7 +236,6 @@
               <div class="field-stack compact-fields" id="scene-render-section">
                 <div class="section-heading section-heading-sub">
                   <p class="section-label">Render</p>
-                  <h2>Selected Splat</h2>
                 </div>
                 <label class="field" title="Choose the renderer quality preset.">
                   <span>Quality</span>
@@ -308,7 +305,6 @@
                 <div class="section-heading section-heading-sub">
                   <p class="section-label">Transform</p>
                   <div class="section-title-row">
-                    <h2>Splat Transform</h2>
                     <span
                       class="hint-badge"
                       title="Rotate, translate, and scale the loaded splat around its own center with explicit numeric values."
@@ -366,14 +362,12 @@
               <div class="field-stack">
                 <div class="section-heading section-heading-sub">
                   <p class="section-label">Item</p>
-                  <h2>Name</h2>
                 </div>
                 <p class="info-item-name" id="info-item-name">No file loaded</p>
               </div>
               <div class="field-stack">
                 <div class="section-heading section-heading-sub">
                   <p class="section-label">Status</p>
-                  <h2>Load Progress</h2>
                 </div>
                 <p class="progress-label" id="progress-label">Open a local file or load the bundled sample.</p>
                 <div class="progress-track" id="progress-track" aria-hidden="true">
@@ -384,7 +378,6 @@
               <div class="field-stack">
                 <div class="section-heading section-heading-sub">
                   <p class="section-label">Info</p>
-                  <h2>Splat Details</h2>
                 </div>
                 <dl class="info-grid">
                   <div>
@@ -463,7 +456,6 @@
               <div class="field-stack">
                 <div class="section-heading section-heading-sub">
                   <p class="section-label">Color</p>
-                  <h2>Scene</h2>
                 </div>
                 <label class="field" title="Linear exposure in stops. Each +1 stop doubles linear scene radiance before output conversion.">
                   <span>Scene Exposure</span>
@@ -475,7 +467,6 @@
                 <div class="field-stack compact-fields tone-curve-panel">
                   <div class="section-heading section-heading-sub">
                     <p class="section-label">Color</p>
-                    <h2>Tone Curve</h2>
                   </div>
                   <p class="progress-label">Edit a point-based tone curve in linear sRGB. Master affects all channels, then Red / Green / Blue can be shaped individually.</p>
                   <label class="field" title="Choose which linear sRGB curve to edit.">
@@ -512,7 +503,6 @@
               <div class="field-stack">
                 <div class="section-heading section-heading-sub">
                   <p class="section-label">Color</p>
-                  <h2>Selected Splat</h2>
                 </div>
                 <label class="field" title="Linear exposure in stops for only the selected splat item.">
                   <span>Selected Exposure</span>
@@ -525,7 +515,6 @@
               <div class="field-stack">
                 <div class="section-heading section-heading-sub">
                   <p class="section-label">Picked</p>
-                  <h2>Splat Colors</h2>
                 </div>
                 <div class="button-pair">
                   <button class="toolbar-button" type="button" id="pick-color-button" title="Store the last hovered frontmost splat color from the 3D view.">Pick Hovered</button>
@@ -540,7 +529,6 @@
               <div class="field-stack">
                 <div class="section-heading section-heading-sub">
                   <p class="section-label">Light</p>
-                  <h2>Point Lights</h2>
                 </div>
                 <div class="button-stack">
                   <button class="toolbar-button" type="button" id="add-point-light-button" title="Add a new point light to the scene.">Add Point Light</button>
@@ -552,7 +540,6 @@
               <div class="field-stack" id="light-controls-section">
                 <div class="section-heading section-heading-sub">
                   <p class="section-label">Light</p>
-                  <h2>Selected Light</h2>
                 </div>
                 <p class="info-item-name" id="light-name">No light selected</p>
                 <div class="button-stack">
@@ -607,7 +594,6 @@
               <div class="field-stack">
                 <div class="section-heading section-heading-sub">
                   <p class="section-label">Animation</p>
-                  <h2>Script Presets</h2>
                 </div>
                 <label class="field" title="Choose a built-in animation preset script.">
                   <span>Preset</span>
@@ -653,7 +639,6 @@
               <div class="field-stack">
                 <div class="section-heading section-heading-sub">
                   <p class="section-label">Animation</p>
-                  <h2>Script Editor</h2>
                 </div>
                 <label class="field" title="Edit the current animation script source, including parameter values and movement code, then apply it to the loaded splats.">
                   <span>Script Source</span>
@@ -667,7 +652,6 @@
               <div class="field-stack">
                 <div class="section-heading section-heading-sub">
                   <p class="section-label">Export</p>
-                  <h2>Format</h2>
                 </div>
                 <p class="progress-label">Current export format: normal binary PLY.</p>
                 <label class="field" title="Apply the selected splat opacity to exported alpha values.">
@@ -687,7 +671,6 @@
               <div class="field-stack">
                 <div class="section-heading section-heading-sub">
                   <p class="section-label">Export</p>
-                  <h2>Splats</h2>
                 </div>
                 <div class="button-pair">
                   <button class="toolbar-button" type="button" id="export-enable-all-button" title="Mark every scene splat for export.">All On</button>
@@ -700,7 +683,6 @@
               <div class="field-stack">
                 <div class="section-heading section-heading-sub">
                   <p class="section-label">Export</p>
-                  <h2>Save</h2>
                 </div>
                 <div class="button-stack">
                   <button class="toolbar-button" type="button" id="save-scene-splats-button" title="Save the selected scene splats as normal PLY files with the current transform and color edits applied.">Save Scene - Splats</button>

@@ -3908,12 +3908,6 @@ function startSparkViewer() {
         if (syncInput && this.dom.toneCurvePointYInput) {
           this.dom.toneCurvePointYInput.value = Number(selectedPoint?.y ?? 1).toFixed(3);
         }
-        if (this.dom.toneCurvePointXInput) {
-          this.dom.toneCurvePointXInput.disabled = isEndpoint;
-        }
-        if (this.dom.toneCurvePointYInput) {
-          this.dom.toneCurvePointYInput.disabled = isEndpoint;
-        }
         if (this.dom.toneCurveRemovePointButton) {
           this.dom.toneCurveRemovePointButton.disabled = isEndpoint;
         }
@@ -4023,12 +4017,12 @@ function startSparkViewer() {
       }
 
       startToneCurvePointDrag(index, event) {
-        if (index <= 0 || !this.dom.toneCurveGraph) {
+        if (!this.dom.toneCurveGraph) {
           return;
         }
         const toneCurve = normalizeToneCurveState(this.state.toneCurve);
         const channel = toneCurve.activeChannel;
-        if (index >= toneCurve.curves[channel].length - 1) {
+        if (index < 0 || index >= toneCurve.curves[channel].length) {
           return;
         }
         event.preventDefault();

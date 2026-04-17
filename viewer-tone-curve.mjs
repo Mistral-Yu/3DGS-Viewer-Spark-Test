@@ -20,24 +20,18 @@ const sortPoints = (points) => [...points]
 
 const normalizeCurvePoints = (points) => {
   const source = Array.isArray(points) && points.length >= 2
-    ? sortPoints(points)
+    ? points.map(clonePoint)
     : [{ x: 0, y: 0 }, { x: 1, y: 1 }];
-  const normalized = source.map((point, index) => {
-    if (index === 0) {
-      return { x: 0, y: 0 };
-    }
-    if (index === source.length - 1) {
-      return { x: 1, y: 1 };
-    }
-    const previous = source[index - 1];
-    const next = source[index + 1];
-    return {
-      x: Math.min(Math.max(point.x, previous.x + MIN_POINT_GAP), next.x - MIN_POINT_GAP),
+  const lastIndex = source.length - 1;
+  const normalized = [];
+  source.forEach((point, index) => {
+    const minX = index === 0 ? 0 : normalized[index - 1].x + MIN_POINT_GAP;
+    const maxX = 1 - ((lastIndex - index) * MIN_POINT_GAP);
+    normalized.push({
+      x: Math.min(Math.max(point.x, minX), maxX),
       y: clamp01(point.y),
-    };
+    });
   });
-  normalized[0] = { x: 0, y: 0 };
-  normalized[normalized.length - 1] = { x: 1, y: 1 };
   return normalized;
 };
 
@@ -218,7 +212,7 @@ export function insertToneCurvePoint(state, channel = null, point = {}) {
   };
   const curves = {
     ...normalized.curves,
-    [safeChannel]: normalizeCurvePoints([...currentCurve, nextPoint]),
+    [safeChannel]: normalizeCurvePoints(sortPoints([...currentCurve, nextPoint])),
   };
   const insertedIndex = curves[safeChannel].findIndex((candidate) =>
     Math.abs(candidate.x - nextPoint.x) < 1e-6 && Math.abs(candidate.y - nextPoint.y) < 1e-6,
@@ -238,13 +232,11 @@ export function updateToneCurvePoint(state, channel = null, index = 0, updates =
   const normalized = normalizeToneCurveState(state);
   const safeChannel = sanitizeChannel(channel ?? normalized.activeChannel);
   const curve = normalized.curves[safeChannel].map(clonePoint);
-  if (index <= 0 || index >= curve.length - 1) {
+  if (index < 0 || index >= curve.length) {
     return normalized;
   }
-  const previous = curve[index - 1];
-  const next = curve[index + 1];
   curve[index] = {
-    x: Math.min(Math.max(clamp01(updates.x ?? curve[index].x), previous.x + MIN_POINT_GAP), next.x - MIN_POINT_GAP),
+    x: clamp01(updates.x ?? curve[index].x),
     y: clamp01(updates.y ?? curve[index].y),
   };
   return {
