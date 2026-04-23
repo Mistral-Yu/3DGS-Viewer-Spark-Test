@@ -22,6 +22,17 @@
         <h1>3DGS Viewer</h1>
       </div>
       <p class="header-status" id="status-line">Starting viewer...</p>
+      <div class="header-actions">
+        <button
+          class="toolbar-button toolbar-button-primary"
+          type="button"
+          id="header-open-file-button"
+          data-open-file-trigger
+          title="Open a local .ply, .spz, .splat, or .ksplat file."
+        >
+          Open File
+        </button>
+      </div>
     </header>
 
     <main class="workspace">
@@ -139,9 +150,28 @@
         <div class="viewer-stage-shell">
         <div class="viewer-stage" id="viewer-stage">
           <div class="viewer-overlay viewer-empty" id="empty-state">
-            <p class="empty-kicker">Direct Open Ready</p>
-            <h2>Load a splat.</h2>
-            <p>Use Open File or drag a supported file into the viewport.</p>
+            <div class="empty-card">
+              <p class="empty-kicker">Direct Open Ready</p>
+              <h2>Load a splat and start look-dev.</h2>
+              <p>Open a local file or drag a supported dataset into the viewport. The viewer keeps the current compact tool layout, then expands into scene editing once content is loaded.</p>
+              <div class="empty-actions">
+                <button
+                  class="toolbar-button toolbar-button-primary empty-open-button"
+                  type="button"
+                  data-open-file-trigger
+                  title="Open a local .ply, .spz, .splat, or .ksplat file."
+                >
+                  Open File
+                </button>
+                <span class="empty-drop-hint">or drag into the viewer</span>
+              </div>
+              <div class="empty-format-list" aria-label="Supported formats">
+                <span class="empty-format-chip">.ply</span>
+                <span class="empty-format-chip">.spz</span>
+                <span class="empty-format-chip">.splat</span>
+                <span class="empty-format-chip">.ksplat</span>
+              </div>
+            </div>
           </div>
 
           <div class="viewer-overlay viewer-drop" id="drop-overlay" hidden>
@@ -168,6 +198,10 @@
           </div>
         </div>
         <section class="timeline-panel" aria-label="Animation timeline">
+          <div class="timeline-heading">
+            <p class="timeline-kicker">Animation Timeline</p>
+            <p class="timeline-empty-note">Loads when an animation script is applied to a scene item.</p>
+          </div>
           <div class="timeline-toolbar">
             <div class="button-pair button-pair-timeline">
               <button class="toolbar-button toolbar-button-primary" type="button" id="animation-play-button" title="Play the current animation script.">Play</button>

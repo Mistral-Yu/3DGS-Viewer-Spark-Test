@@ -107,6 +107,7 @@ function startSparkViewer() {
       swirl: { min: 0, max: 6 },
     };
     const dom = {
+      appShell: document.querySelector(".app-shell"),
       backgroundSelect: document.getElementById("background-select"),
       cameraChip: document.getElementById("camera-chip"),
       clearPickedColorsButton: document.getElementById("clear-picked-colors-button"),
@@ -213,6 +214,7 @@ function startSparkViewer() {
       moveSpeedInput: document.getElementById("move-speed-input"),
       moveSpeedRange: document.getElementById("move-speed-range"),
       openFileButton: document.getElementById("open-file-button"),
+      openFileTriggers: Array.from(document.querySelectorAll("[data-open-file-trigger]")),
       opacityInput: document.getElementById("opacity-input"),
       opacityRange: document.getElementById("opacity-range"),
       pickColorButton: document.getElementById("pick-color-button"),
@@ -1653,7 +1655,9 @@ function startSparkViewer() {
           onChange: (value, options) => this.setGridScaleValue(value, options),
         });
 
-        this.dom.openFileButton.addEventListener("click", () => this.dom.fileInput.click());
+        this.dom.openFileTriggers.forEach((button) => {
+          button.addEventListener("click", () => this.dom.fileInput.click());
+        });
         this.dom.renderModeSelect.addEventListener("change", (event) => {
           this.setRenderMode(event.target.value);
           this.dom.renderModeSelect.blur();
@@ -4992,11 +4996,13 @@ function startSparkViewer() {
       }
 
       hideEmptyState() {
+        this.dom.appShell?.classList.remove("is-empty");
         this.dom.emptyState.hidden = true;
         this.dom.dropOverlay.hidden = true;
       }
 
       showEmptyState() {
+        this.dom.appShell?.classList.add("is-empty");
         this.dom.emptyState.hidden = false;
         this.dom.dropOverlay.hidden = true;
       }
