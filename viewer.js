@@ -1603,7 +1603,7 @@ function startSparkViewer() {
           limits: TRANSLATE_LIMITS,
           onChange: (value) => this.setAnimationOriginAxis("z", value),
         });
-        this.dom.animationLoadPresetButton?.addEventListener("click", () => this.loadAnimationPreset(this.dom.animationPresetSelect?.value || "explosion"));
+        this.dom.animationLoadPresetButton?.addEventListener("click", () => this.loadAnimationPreset(this.dom.animationPresetSelect?.value || "reveal"));
         this.dom.animationCopyDefaultButton?.addEventListener("click", () => this.clearAnimationScript(true));
         this.dom.animationApplyButton?.addEventListener("click", () => this.applyAnimationScript(true));
         this.dom.animationPlayButton?.addEventListener("click", () => this.playAnimation());
@@ -2098,8 +2098,6 @@ function startSparkViewer() {
           ? this.spark.falloff
           : item?.settings?.falloff ?? 1;
         this.state.opacity = item?.settings?.opacity ?? 1;
-        this.state.renderMode = item?.settings?.renderMode ?? "beauty";
-        this.state.shLevel = item?.settings?.shLevel ?? 3;
         if (item) {
           this.spark.falloff = this.state.falloff;
         }
@@ -2244,7 +2242,7 @@ function startSparkViewer() {
           return "beauty";
         }
         return item.id === this.selectedSceneItemId
-          ? (item.settings.renderMode || "beauty")
+          ? (this.state.renderMode || "beauty")
           : "beauty";
       }
 
@@ -5423,7 +5421,7 @@ function startSparkViewer() {
             return;
           }
           const itemMode = item.id === this.selectedSceneItemId
-            ? (item.settings.renderMode || "beauty")
+            ? (this.state.renderMode || "beauty")
             : "beauty";
           const objectModifiers = [];
           if (item.baseObjectModifier) {
@@ -5744,12 +5742,12 @@ function startSparkViewer() {
             : "";
         }
         if (this.dom.animationPresetSelect) {
-          this.dom.animationPresetSelect.value = this.activeAnimationScript?.preset || "explosion";
+          this.dom.animationPresetSelect.value = this.activeAnimationScript?.preset || "reveal";
         }
         if (this.dom.animationScriptStatus) {
           this.dom.animationScriptStatus.textContent = this.activeAnimationScript
             ? `${this.activeAnimationScript.name} is loaded. Apply the script to animate the splats.`
-            : "No animation script loaded. Use Splat Explosion, load a script, or keep animation off.";
+            : "No animation script loaded. Use Splat Reveal, load a script, or keep animation off.";
         }
         this.syncAnimationOriginControls();
       }

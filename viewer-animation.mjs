@@ -9,11 +9,17 @@ const EXPLOSION_SCRIPT_SOURCE = `({
   originMode: 'centroid',
   origin: [0, 0, 0],
   params: {
+    // distanceScale: How quickly the burst pushes splats outward from the origin.
     distanceScale: 1.1,
+    // opacityPower: How aggressively opacity fades as the burst progresses.
     opacityPower: 0.65,
+    // scaleInfluence: How much larger splats travel faster/farther.
     scaleInfluence: 1.6,
+    // speed: How fast the burst advances over time.
     speed: 0.6,
+    // strength: Overall motion amplitude.
     strength: 1.2,
+    // swirl: How much side-to-side spiral motion is added.
     swirl: 0.35,
   },
   createModifier: ({ dyno, handles }) => {
@@ -114,11 +120,17 @@ const REVEAL_SCRIPT_SOURCE = `({
   originMode: 'centroid',
   origin: [0, 0, 0],
   params: {
+    // distanceScale: How quickly the reveal front advances from the origin.
     distanceScale: 0.85,
+    // opacityPower: How sharply newly revealed splats fade in.
     opacityPower: 1.15,
+    // scaleInfluence: How strongly splat size affects reveal timing.
     scaleInfluence: 0.8,
+    // speed: How fast the reveal wave travels.
     speed: 1.0,
+    // strength: How much the reveal drifts the remaining splats inward.
     strength: 1.5,
+    // swirl: How much subtle spiral motion is mixed in.
     swirl: 0.2,
   },
   createModifier: ({ dyno, handles }) => {
@@ -289,7 +301,20 @@ export function parseAnimationScript(text) {
 export function serializeAnimationScript(config) {
   const parsed = typeof config === 'string' ? parseAnimationScript(config) : normalizeAnimationConfig(config);
   const originSource = indentBlock(JSON.stringify([parsed.origin.x, parsed.origin.y, parsed.origin.z], null, 2));
-  const paramsSource = indentBlock(JSON.stringify(parsed.params, null, 2));
+  const paramsSource = indentBlock(`{
+    // distanceScale: How quickly the burst/reveal path moves from the origin.
+    distanceScale: ${parsed.params.distanceScale},
+    // opacityPower: How sharply opacity changes during the animation.
+    opacityPower: ${parsed.params.opacityPower},
+    // scaleInfluence: How strongly splat size affects timing.
+    scaleInfluence: ${parsed.params.scaleInfluence},
+    // speed: How fast the animation advances.
+    speed: ${parsed.params.speed},
+    // strength: How strong the motion curve is overall.
+    strength: ${parsed.params.strength},
+    // swirl: How much spiral motion is blended in.
+    swirl: ${parsed.params.swirl},
+  }`);
   const modifierSource = indentBlock(parsed.createModifier.toString());
   return `({
   version: ${parsed.version},

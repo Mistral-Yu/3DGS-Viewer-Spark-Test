@@ -9,9 +9,9 @@ import {
   createDefaultAnimationPlaybackState,
   getAnimationPresetScriptText,
   parseAnimationScript,
+  serializeAnimationScript,
   shouldRenderAnimationFrame,
 } from '../viewer-animation.mjs';
-
 const vec3 = (x = 0, y = 0, z = 0) => ({ x, y, z });
 const isVec3 = (value) =>
   Boolean(value) &&
@@ -252,6 +252,18 @@ test('createDefaultAnimationPlaybackState keeps animation off when no script is 
   assert.equal(state.animationTime, 0);
   assert.equal(state.animationDuration, 0);
   assert.equal(state.animationApplied, false);
+});
+
+test('serializeAnimationScript keeps inline parameter annotations in the source text', () => {
+  const script = parseAnimationScript(getAnimationPresetScriptText('reveal'));
+  const serialized = serializeAnimationScript(script);
+
+  assert.match(serialized, /distanceScale: How quickly/);
+  assert.match(serialized, /opacityPower: How sharply/);
+  assert.match(serialized, /scaleInfluence: How strongly/);
+  assert.match(serialized, /speed: How fast/);
+  assert.match(serialized, /strength: How strong/);
+  assert.match(serialized, /swirl: How much/);
 });
 
 test('shouldRenderAnimationFrame requires an applied script that is actively playing', () => {

@@ -633,8 +633,8 @@
                   <span>Preset</span>
                   <div class="field-inline field-inline-actions">
                     <select id="animation-preset-select">
-                      <option value="explosion" selected>Splat Explosion</option>
-                      <option value="reveal">Splat Reveal</option>
+                      <option value="explosion">Splat Explosion</option>
+                      <option value="reveal" selected>Splat Reveal</option>
                     </select>
                     <button class="toolbar-button" type="button" id="animation-load-preset-button" title="Load the selected preset into the script editor.">Load Preset</button>
                   </div>
@@ -648,7 +648,7 @@
                   <button class="toolbar-button" type="button" id="animation-copy-default-button" title="Clear the current animation script so no animation is applied.">No Script</button>
                 </div>
                 <label class="field" title="Choose whether the active animation starts from the splat centroid or a manually specified point.">
-                  <span>Explosion Origin</span>
+                  <span>Animation Origin</span>
                   <select id="animation-origin-mode-select">
                     <option value="centroid" selected>Centroid</option>
                     <option value="manual">Manual</option>
@@ -674,11 +674,11 @@
                 <div class="section-heading section-heading-sub">
                   <p class="section-label">Animation</p>
                 </div>
-                <label class="field" title="Edit the current animation script source, including parameter values and movement code, then apply it to the loaded splats.">
+                <label class="field" title="Edit the current animation script source; the params are annotated inline so you can see what each value changes.">
                   <span>Script Source</span>
                   <textarea class="script-editor" id="animation-script-editor" spellcheck="false" rows="24"></textarea>
                 </label>
-                <p class="progress-label" id="animation-script-status">No animation script loaded. Use Splat Explosion, load a script, or keep animation off.</p>
+                <p class="progress-label" id="animation-script-status">No animation script loaded. Use Splat Reveal, load a script, or keep animation off.</p>
               </div>
             </section>
 

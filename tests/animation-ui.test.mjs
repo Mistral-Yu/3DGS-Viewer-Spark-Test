@@ -31,7 +31,8 @@ test('animation tab keeps preset load beside preset and script actions in the pa
 
   assert.match(panel, /id="animation-preset-select"[\s\S]*id="animation-load-preset-button"/);
   assert.match(panel, /value="explosion"/);
-  assert.match(panel, /value="reveal"/);
+  assert.match(panel, /value="reveal" selected/);
+  assert.doesNotMatch(panel, /value="explosion" selected/);
   assert.match(panel, /id="animation-origin-mode-select"/);
   assert.match(panel, /id="animation-origin-x-input"/);
   assert.match(panel, /id="animation-origin-y-input"/);

@@ -12,6 +12,8 @@ test('applyRenderMode keeps apply-only scripts visually idle and updates modifie
   assert.match(source, /item\.mesh\.covObjectModifiers = item\.mesh\.objectModifiers;/);
   assert.match(source, /item\.mesh\.covWorldModifiers = item\.mesh\.worldModifiers;/);
   assert.match(source, /this\.applyShLevel\(true\);/);
+  assert.match(source, /return item\.id === this\.selectedSceneItemId\n\s*\? \(this\.state\.renderMode \|\| "beauty"\)/);
+  assert.doesNotMatch(source, /\? \(item\.settings\.renderMode \|\| "beauty"\)/);
 });
 
 test('tone curve state is stored per scene item and applied only to the selected item', () => {

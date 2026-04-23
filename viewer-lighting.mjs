@@ -1,7 +1,7 @@
 export const DEFAULT_LIGHT_COLOR = {
   r: 1,
-  g: 0.7,
-  b: 0.45,
+  g: 1,
+  b: 1,
 };
 
 export const DEFAULT_LIGHT_HELPER_SCALE = 0.1;
