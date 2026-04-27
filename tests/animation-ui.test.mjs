@@ -90,6 +90,22 @@ test('color tab exposes point-based linear-srgb tone curve controls', () => {
   assert.match(css, /\.tone-curve-point-list/);
 });
 
+test('color tab exposes load-and-apply LUT controls with explicit color-space conversion choices', () => {
+  const colorMatch = html.match(/<section class="inspector-panel" id="inspector-color"[\s\S]*?<\/section>/);
+  assert.ok(colorMatch, 'color panel should exist');
+  const panel = colorMatch[0];
+
+  assert.match(panel, /id="lut-open-button"/);
+  assert.match(panel, /id="lut-file-input"/);
+  assert.match(panel, /id="lut-input-color-space-select"/);
+  assert.match(panel, /id="lut-output-color-space-select"/);
+  assert.match(panel, /id="lut-apply-selected-button"/);
+  assert.match(panel, /value="linear-srgb"/);
+  assert.match(panel, /value="srgb"/);
+  assert.match(panel, /value="gamma22"/);
+  assert.match(panel, /workspace is linear sRGB/);
+});
+
 test('info tab exposes post-load auto-lod and load-mode fields', () => {
   const infoMatch = html.match(/<section class="inspector-panel" id="inspector-info"[\s\S]*?<\/section>/);
   assert.ok(infoMatch, 'info panel should exist');

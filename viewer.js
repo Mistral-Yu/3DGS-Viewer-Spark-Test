@@ -32,6 +32,7 @@ import {
   shouldRenderAnimationFrame,
 } from "./viewer-animation.mjs";
 import { DEFAULT_LIGHT_COLOR, DEFAULT_LIGHT_HELPER_SCALE, clampLightColor, createDefaultLightState } from "./viewer-lighting.mjs";
+import { applyCubeLutToLinearRgb, parseCubeLut, summarizeCubeLut } from "./viewer-lut.mjs";
 
 function startSparkViewer() {
     const {
@@ -114,6 +115,12 @@ function startSparkViewer() {
       clearSceneButton: document.getElementById("clear-scene-button"),
       colorspaceChip: document.getElementById("colorspace-chip"),
       lodAutoCheckbox: document.getElementById("lod-auto-checkbox"),
+      lutApplySelectedButton: document.getElementById("lut-apply-selected-button"),
+      lutFileInput: document.getElementById("lut-file-input"),
+      lutInputColorSpaceSelect: document.getElementById("lut-input-color-space-select"),
+      lutOpenButton: document.getElementById("lut-open-button"),
+      lutOutputColorSpaceSelect: document.getElementById("lut-output-color-space-select"),
+      lutStatus: document.getElementById("lut-status"),
       lodChip: document.getElementById("lod-chip"),
       depthRangeField: document.getElementById("depth-range-field"),
       depthRangeInput: document.getElementById("depth-range-input"),
@@ -1301,6 +1308,8 @@ function startSparkViewer() {
           exportOpacity: true,
           exportSh: true,
           exposure: 0,
+          loadedLut: null,
+          loadedLutName: "",
           toneCurve: buildToneCurveState(),
           falloff: 1,
           focalLength: 14,
@@ -1356,6 +1365,7 @@ function startSparkViewer() {
         this.applyFalloff(false);
         this.applyExposure(false);
         this.applyToneCurve(false);
+        this.syncLutUi();
         this.applyFocalLength(false, false);
         this.applyMoveSpeed(false);
         this.applyRenderFps(false);
@@ -1525,6 +1535,11 @@ function startSparkViewer() {
           }
           this.startColorPickMode();
         });
+        this.dom.lutOpenButton?.addEventListener("click", () => this.dom.lutFileInput?.click());
+        this.dom.lutFileInput?.addEventListener("change", (event) => this.loadLutFile(event.target.files?.[0]));
+        this.dom.lutApplySelectedButton?.addEventListener("click", () => this.applyLoadedLutToSelectedSplat());
+        this.dom.lutInputColorSpaceSelect?.addEventListener("change", () => this.syncLutUi());
+        this.dom.lutOutputColorSpaceSelect?.addEventListener("change", () => this.syncLutUi());
         this.dom.clearPickedColorsButton?.addEventListener("click", () => {
           this.clearPickedColors();
         });
@@ -2131,6 +2146,7 @@ function startSparkViewer() {
           this.dom.shSelect.value = String(this.state.shLevel);
         }
         this.syncToneCurveUi(syncInputs);
+        this.syncLutUi();
         this.setSectionDisabled(this.dom.sceneRenderSection, !item);
         this.setSectionDisabled(this.dom.sceneTransformSection, !item);
       }
@@ -3443,6 +3459,98 @@ function startSparkViewer() {
         this.pickedColors = [];
         this.renderPickedColors();
         this.updateStatus("Cleared picked splat colors");
+      }
+
+      syncLutUi() {
+        const hasLut = Boolean(this.state.loadedLut);
+        const hasSelectedItem = Boolean(this.getSelectedItem());
+        if (this.dom.lutApplySelectedButton) {
+          this.dom.lutApplySelectedButton.disabled = !hasLut || !hasSelectedItem;
+        }
+        if (this.dom.lutStatus) {
+          const inputSpace = this.dom.lutInputColorSpaceSelect?.selectedOptions?.[0]?.textContent ?? "Linear sRGB";
+          const outputSpace = this.dom.lutOutputColorSpaceSelect?.selectedOptions?.[0]?.textContent ?? "Linear sRGB";
+          this.dom.lutStatus.textContent = hasLut
+            ? `Loaded ${summarizeCubeLut(this.state.loadedLut)}. Workspace is linear sRGB; before LUT: ${inputSpace}, after LUT: ${outputSpace}.`
+            : "Load a 3D .cube LUT and apply it to the selected splat item. The workspace is linear sRGB, so choose the color-space conversion before and after LUT sampling.";
+        }
+      }
+
+      async loadLutFile(file) {
+        if (!file) {
+          return;
+        }
+        try {
+          const text = await file.text();
+          this.state.loadedLut = parseCubeLut(text);
+          this.state.loadedLutName = file.name || this.state.loadedLut.title || "LUT";
+          this.syncLutUi();
+          this.updateStatus(`Loaded LUT ${this.state.loadedLutName}`);
+        } catch (error) {
+          this.state.loadedLut = null;
+          this.state.loadedLutName = "";
+          this.syncLutUi();
+          this.updateStatus(error instanceof Error ? error.message : "Failed to load LUT");
+        } finally {
+          if (this.dom.lutFileInput) {
+            this.dom.lutFileInput.value = "";
+          }
+        }
+      }
+
+      markSplatStorageNeedsUpdate(splats) {
+        if (!splats) {
+          return;
+        }
+        splats.needsUpdate = true;
+        splats.source?.image && (splats.source.needsUpdate = true);
+        if (Array.isArray(splats.textures)) {
+          splats.textures.forEach((texture) => {
+            if (texture) {
+              texture.needsUpdate = true;
+            }
+          });
+        }
+        splats.updateTextures?.();
+        splats.disposeLodSplats?.();
+      }
+
+      applyLoadedLutToSelectedSplat() {
+        const lut = this.state.loadedLut;
+        const item = this.getSelectedItem();
+        const splats = item?.mesh?.splats ?? item?.mesh?.extSplats ?? item?.mesh?.packedSplats;
+        const count = Number(splats?.numSplats ?? item?.mesh?.numSplats ?? 0);
+        if (!lut) {
+          this.updateStatus("Load a 3D .cube LUT first");
+          return;
+        }
+        if (!item || !splats?.getSplat || !splats?.setSplat || !count) {
+          this.updateStatus("No editable selected splat item is available");
+          return;
+        }
+        const inputColorSpace = this.dom.lutInputColorSpaceSelect?.value ?? "linear-srgb";
+        const outputColorSpace = this.dom.lutOutputColorSpaceSelect?.value ?? "linear-srgb";
+        const color = new THREE.Color();
+        let changed = 0;
+        for (let index = 0; index < count; index += 1) {
+          const splat = splats.getSplat(index);
+          const baseLinear = toLinearRgbArray(splat.color ?? splat.rgb ?? splat.rgba);
+          const nextLinear = applyCubeLutToLinearRgb(baseLinear, lut, { inputColorSpace, outputColorSpace });
+          color.setRGB(nextLinear[0], nextLinear[1], nextLinear[2]);
+          splats.setSplat(index, splat.center, splat.scales, splat.quaternion, splat.opacity, color);
+          changed += 1;
+        }
+        this.markSplatStorageNeedsUpdate(splats);
+        item.mesh.updateGenerator?.();
+        item.hoverEntries = this.createMeshHoverEntries(item);
+        this.renderPickedColors();
+        if (this.hoverPointer) {
+          this.updateHoverReadout();
+        }
+        this.invalidateRender();
+        this.forceVisualRefresh(3);
+        this.queueSparkSceneUpdate();
+        this.updateStatus(`Applied ${summarizeCubeLut(lut)} to ${changed.toLocaleString()} splats in ${item.modelMeta.name}`);
       }
 
       pickHoveredColor({ fromPointerClick = false } = {}) {

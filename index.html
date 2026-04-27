@@ -546,6 +546,33 @@
                   </div>
                 </label>
               </div>
+              <div class="field-stack compact-fields">
+                <div class="section-heading section-heading-sub">
+                  <p class="section-label">LUT</p>
+                </div>
+                <p class="progress-label" id="lut-status">Load a 3D .cube LUT and apply it to the selected splat item. The workspace is linear sRGB, so choose the color-space conversion before and after LUT sampling.</p>
+                <input id="lut-file-input" type="file" accept=".cube,text/plain" hidden>
+                <div class="button-pair">
+                  <button class="toolbar-button" type="button" id="lut-open-button" title="Load a 3D .cube LUT file from this device.">Load LUT</button>
+                  <button class="toolbar-button toolbar-button-primary" type="button" id="lut-apply-selected-button" title="Bake the loaded LUT into the selected splat item colors.">Apply to Selected</button>
+                </div>
+                <label class="field" title="Convert the current linear sRGB splat color into this space before sampling the LUT.">
+                  <span>Before LUT</span>
+                  <select id="lut-input-color-space-select">
+                    <option value="linear-srgb" selected>Linear sRGB</option>
+                    <option value="srgb">Display sRGB</option>
+                    <option value="gamma22">Gamma 2.2</option>
+                  </select>
+                </label>
+                <label class="field" title="Interpret the LUT output as this space, then convert it back to the linear sRGB workspace.">
+                  <span>After LUT</span>
+                  <select id="lut-output-color-space-select">
+                    <option value="linear-srgb" selected>Linear sRGB</option>
+                    <option value="srgb">Display sRGB</option>
+                    <option value="gamma22">Gamma 2.2</option>
+                  </select>
+                </label>
+              </div>
               <div class="field-stack">
                 <div class="section-heading section-heading-sub">
                   <p class="section-label">Picked</p>
