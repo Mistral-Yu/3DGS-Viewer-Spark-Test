@@ -89,18 +89,25 @@ test("formatAlignPointLabel numbers matching marker pairs", () => {
   assert.equal(formatAlignPointLabel({ role: "target", index: 2 }), "T2");
 });
 
-test("index exposes an Align inspector tab with source and target selectors", () => {
+test("index exposes an Align inspector tab with source, target, point, apply, and reset controls", () => {
   assert.match(indexHtml, /data-inspector-tab="align"/);
   assert.match(indexHtml, /id="align-source-select"/);
   assert.match(indexHtml, /id="align-target-select"/);
   assert.match(indexHtml, /id="align-add-point-button"/);
   assert.match(indexHtml, /id="align-apply-button"/);
+  assert.match(indexHtml, /id="align-reset-button"/);
 });
 
-test("viewer wires align controls and applies rigid alignment to a selected splat", () => {
+test("viewer wires align controls, editable points, reset, and applies results into splat transforms", () => {
   assert.match(viewerSource, /import .*computeRigidAlignment.*from "\.\/viewer-align\.mjs"/s);
   assert.match(viewerSource, /alignSourceSelect: document\.getElementById\("align-source-select"\)/);
   assert.match(viewerSource, /this\.dom\.alignApplyButton\?\.addEventListener\("click", \(\) => this\.applyAlignment\(\)\)/);
+  assert.match(viewerSource, /this\.dom\.alignResetButton\?\.addEventListener\("click", \(\) => this\.resetAlignment\(\)\)/);
+  assert.match(viewerSource, /updateAlignPointCoordinate\(/);
+  assert.match(viewerSource, /removeAlignPointPair\(/);
   assert.match(viewerSource, /applyAlignment\(\)/);
   assert.match(viewerSource, /matrix4\.decompose\(translation, quaternion, scaleVector\)/);
+  assert.match(viewerSource, /sourceItem\.transform\.translateX = sourceItem\.modelRoot\.position\.x/);
+  assert.match(viewerSource, /sourceItem\.transform\.rotationZ = THREE\.MathUtils\.radToDeg\(sourceItem\.rotationPivot\.rotation\.z\)/);
+  assert.match(viewerSource, /sourceItem\.transform\.scale = sourceItem\.rotationPivot\.scale\.x/);
 });

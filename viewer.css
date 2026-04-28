@@ -1129,10 +1129,10 @@ body[data-layout="stacked"] .panel-left {
 
 .align-point-row {
   display: grid;
-  grid-template-columns: 42px minmax(0, 1fr) minmax(0, 1fr);
-  gap: var(--space-1);
-  align-items: center;
-  padding: var(--space-1) var(--space-2);
+  grid-template-columns: auto minmax(0, 1fr) minmax(0, 1fr) auto;
+  gap: 0.45rem;
+  align-items: start;
+  padding: 0.45rem;
   border: 1px solid rgba(148, 163, 184, 0.18);
   border-radius: 10px;
   background: rgba(15, 23, 42, 0.42);
@@ -1143,4 +1143,31 @@ body[data-layout="stacked"] .panel-left {
 .align-point-label {
   color: var(--accent);
   font-weight: 700;
+  padding-top: 0.35rem;
+}
+
+.align-point-editor {
+  display: grid;
+  grid-template-columns: auto repeat(3, minmax(0, 1fr));
+  gap: 0.3rem;
+  align-items: center;
+  min-width: 0;
+}
+
+.align-point-editor-label {
+  color: var(--muted);
+  font-size: 0.72rem;
+  white-space: nowrap;
+}
+
+.align-point-coordinate-input {
+  min-width: 0;
+  padding: 0.28rem 0.32rem;
+  font-size: 0.72rem;
+}
+
+.align-point-remove-button {
+  padding: 0.28rem 0.45rem;
+  font-size: 0.72rem;
+  white-space: nowrap;
 }

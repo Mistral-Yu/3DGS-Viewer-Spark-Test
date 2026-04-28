@@ -220,6 +220,7 @@ function startSparkViewer() {
       alignApplyButton: document.getElementById("align-apply-button"),
       alignClearPointsButton: document.getElementById("align-clear-points-button"),
       alignPointList: document.getElementById("align-point-list"),
+      alignResetButton: document.getElementById("align-reset-button"),
       alignRoleSelect: document.getElementById("align-role-select"),
       alignSourceSelect: document.getElementById("align-source-select"),
       alignStatus: document.getElementById("align-status"),
@@ -1231,6 +1232,7 @@ function startSparkViewer() {
         this.alignPoints = { source: [], target: [] };
         this.alignMarkers = [];
         this.alignPickMode = false;
+        this.lastAlignmentSnapshot = null;
         this.lightOccluderSamples = [];
         this.runtimeLightOccluders = [];
         this.activeLightCount = 0;
@@ -1568,6 +1570,7 @@ function startSparkViewer() {
         this.dom.alignAddPointButton?.addEventListener("click", () => this.startAlignPointPick());
         this.dom.alignClearPointsButton?.addEventListener("click", () => this.clearAlignPoints());
         this.dom.alignApplyButton?.addEventListener("click", () => this.applyAlignment());
+        this.dom.alignResetButton?.addEventListener("click", () => this.resetAlignment());
         this.dom.addPointLightButton?.addEventListener("click", () => {
           this.addPointLight();
         });
@@ -2394,6 +2397,12 @@ function startSparkViewer() {
         if (this.dom.alignApplyButton) {
           this.dom.alignApplyButton.disabled = !ready;
         }
+        if (this.dom.alignResetButton) {
+          const resetItem = this.lastAlignmentSnapshot
+            ? this.sceneItems.find((item) => item.id === this.lastAlignmentSnapshot.itemId)
+            : null;
+          this.dom.alignResetButton.disabled = !resetItem;
+        }
         if (this.dom.alignAddPointButton) {
           this.dom.alignAddPointButton.disabled = this.sceneItems.length < 1;
           this.dom.alignAddPointButton.classList.toggle("is-active", this.alignPickMode);
@@ -2418,17 +2427,72 @@ function startSparkViewer() {
           const label = document.createElement("span");
           label.className = "align-point-label";
           label.textContent = `#${index + 1}`;
-          const source = document.createElement("span");
-          source.textContent = this.alignPoints.source[index]
-            ? `${formatAlignPointLabel({ role: "source", index: index + 1 })} ${formatVector(this.alignPoints.source[index])}`
-            : "S- missing";
-          const target = document.createElement("span");
-          target.textContent = this.alignPoints.target[index]
-            ? `${formatAlignPointLabel({ role: "target", index: index + 1 })} ${formatVector(this.alignPoints.target[index])}`
-            : "T- missing";
-          row.append(label, source, target);
+          const source = this.createAlignPointEditor({ role: "source", index, point: this.alignPoints.source[index] });
+          const target = this.createAlignPointEditor({ role: "target", index, point: this.alignPoints.target[index] });
+          const removeButton = document.createElement("button");
+          removeButton.className = "toolbar-button align-point-remove-button";
+          removeButton.type = "button";
+          removeButton.textContent = "Remove";
+          removeButton.title = `Remove marker pair #${index + 1}`;
+          removeButton.addEventListener("click", () => this.removeAlignPointPair(index));
+          row.append(label, source, target, removeButton);
           this.dom.alignPointList.append(row);
         }
+      }
+
+      createAlignPointEditor({ role, index, point }) {
+        const wrapper = document.createElement("div");
+        wrapper.className = `align-point-editor align-point-editor-${role}`;
+        const title = document.createElement("span");
+        title.className = "align-point-editor-label";
+        title.textContent = point
+          ? formatAlignPointLabel({ role, index: index + 1 })
+          : `${role === "source" ? "S" : "T"}-`;
+        wrapper.append(title);
+        ["x", "y", "z"].forEach((axis) => {
+          const input = document.createElement("input");
+          input.className = "text-input align-point-coordinate-input";
+          input.type = "number";
+          input.step = "0.001";
+          input.inputMode = "decimal";
+          input.dataset.alignRole = role;
+          input.dataset.alignIndex = String(index);
+          input.dataset.alignAxis = axis;
+          input.title = `${formatAlignPointLabel({ role, index: index + 1 })} ${axis.toUpperCase()}`;
+          input.value = point ? formatNumber(point[axis], 3) : "";
+          input.disabled = !point;
+          input.addEventListener("change", () => this.updateAlignPointCoordinate(role, index, axis, input.value));
+          input.addEventListener("keydown", (event) => {
+            if (event.key === "Enter") {
+              input.blur();
+            }
+          });
+          wrapper.append(input);
+        });
+        return wrapper;
+      }
+
+      updateAlignPointCoordinate(role, index, axis, rawValue) {
+        const point = this.alignPoints[role]?.[index];
+        const value = Number(rawValue);
+        if (!point || !["x", "y", "z"].includes(axis) || !Number.isFinite(value)) {
+          this.renderAlignPointList();
+          return;
+        }
+        point[axis] = value;
+        this.rebuildAlignMarkers();
+        this.syncAlignUi();
+        this.updateStatus(`Edited ${formatAlignPointLabel({ role, index: index + 1 })} ${axis.toUpperCase()} to ${formatNumber(value, 3)}`);
+        this.forceVisualRefresh(2);
+      }
+
+      removeAlignPointPair(index) {
+        this.alignPoints.source.splice(index, 1);
+        this.alignPoints.target.splice(index, 1);
+        this.rebuildAlignMarkers();
+        this.syncAlignUi();
+        this.updateStatus(`Removed alignment point pair #${index + 1}`);
+        this.forceVisualRefresh(2);
       }
 
       startAlignPointPick() {
@@ -2485,6 +2549,71 @@ function startSparkViewer() {
         this.alignMarkers.push(marker);
       }
 
+      rebuildAlignMarkers() {
+        this.alignMarkers.forEach((marker) => this.scene.remove(marker));
+        this.alignMarkers = [];
+        ["source", "target"].forEach((role) => {
+          this.alignPoints[role].forEach((point, index) => {
+            this.addAlignMarker({ role, index: index + 1, point });
+          });
+        });
+      }
+
+      snapshotSceneItemTransform(item) {
+        return {
+          itemId: item.id,
+          transform: { ...item.transform },
+        };
+      }
+
+      applySceneItemTransformSnapshot(item, snapshot) {
+        Object.assign(item.transform, snapshot.transform);
+        item.modelRoot.position.set(
+          item.transform.translateX,
+          item.transform.translateY,
+          item.transform.translateZ,
+        );
+        item.rotationPivot.rotation.set(
+          THREE.MathUtils.degToRad(item.transform.rotationX),
+          THREE.MathUtils.degToRad(item.transform.rotationY),
+          THREE.MathUtils.degToRad(item.transform.rotationZ),
+        );
+        item.rotationPivot.scale.setScalar(item.transform.scale);
+        item.rotationPivot.updateMatrixWorld(true);
+        item.modelRoot.updateMatrixWorld(true);
+      }
+
+      refreshSceneAfterAlignTransform(item) {
+        this.selectSceneItem(item.id, false);
+        this.applySelectedTransformState(true);
+        this.syncTransformInputs();
+        this.syncVisibleSceneItemTransforms();
+        this.recomputeBounds();
+        this.recomputeSceneBounds();
+        this.refreshHelpers();
+        this.updateCameraClipping();
+        this.refreshLightingModel();
+        this.updateMetaUi();
+        this.syncAlignUi();
+        this.forceVisualRefresh(4);
+      }
+
+      resetAlignment() {
+        const snapshot = this.lastAlignmentSnapshot;
+        const sourceItem = snapshot
+          ? this.sceneItems.find((item) => item.id === snapshot.itemId)
+          : null;
+        if (!sourceItem) {
+          this.updateStatus("No alignment result to reset");
+          this.syncAlignUi();
+          return;
+        }
+        this.applySceneItemTransformSnapshot(sourceItem, snapshot);
+        this.lastAlignmentSnapshot = null;
+        this.refreshSceneAfterAlignTransform(sourceItem);
+        this.updateStatus(`Reset alignment on ${sourceItem.modelMeta.name}`);
+      }
+
       clearAlignPoints() {
         this.alignPoints = { source: [], target: [] };
         this.alignMarkers.forEach((marker) => this.scene.remove(marker));
@@ -2525,6 +2654,7 @@ function startSparkViewer() {
           const quaternion = new THREE.Quaternion();
           const scaleVector = new THREE.Vector3();
           matrix4.decompose(translation, quaternion, scaleVector);
+          this.lastAlignmentSnapshot = this.snapshotSceneItemTransform(sourceItem);
           sourceItem.modelRoot.position.copy(translation);
           sourceItem.rotationPivot.quaternion.copy(quaternion);
           sourceItem.rotationPivot.rotation.setFromQuaternion(quaternion, "XYZ");
@@ -2536,18 +2666,8 @@ function startSparkViewer() {
           sourceItem.transform.rotationY = THREE.MathUtils.radToDeg(sourceItem.rotationPivot.rotation.y);
           sourceItem.transform.rotationZ = THREE.MathUtils.radToDeg(sourceItem.rotationPivot.rotation.z);
           sourceItem.transform.scale = sourceItem.rotationPivot.scale.x;
-          this.selectSceneItem(sourceItem.id, false);
-          this.syncTransformInputs();
-          this.syncVisibleSceneItemTransforms();
-          this.recomputeBounds();
-          this.recomputeSceneBounds();
-          this.refreshHelpers();
-          this.updateCameraClipping();
-          this.refreshLightingModel();
-          this.updateMetaUi();
-          this.syncAlignUi();
+          this.refreshSceneAfterAlignTransform(sourceItem);
           this.updateStatus(`Aligned ${sourceItem.modelMeta.name} to ${targetItem.modelMeta.name} using ${transform.pairCount} pairs`);
-          this.forceVisualRefresh(4);
         } catch (error) {
           this.updateStatus(error instanceof Error ? error.message : "Alignment failed");
         }
