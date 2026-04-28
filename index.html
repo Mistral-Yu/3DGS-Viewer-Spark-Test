@@ -238,6 +238,7 @@
             <button class="segmented-button" type="button" id="tab-color-button" data-inspector-tab="color" role="tab" aria-selected="false" title="Linear color grading controls.">Color</button>
             <button class="segmented-button" type="button" id="tab-light-button" data-inspector-tab="light" role="tab" aria-selected="false" title="Manage point lights that relight visible splats in beauty mode.">Light</button>
             <button class="segmented-button" type="button" id="tab-animation-button" data-inspector-tab="animation" role="tab" aria-selected="false" title="Load, edit, save, and play per-splat animation scripts.">Animation</button>
+            <button class="segmented-button" type="button" id="tab-align-button" data-inspector-tab="align" role="tab" aria-selected="false" title="Place matching markers on two splats and rigid-align one to the other.">Align</button>
             <button class="segmented-button" type="button" id="tab-info-button" data-inspector-tab="info" role="tab" aria-selected="false" title="Loaded splat metadata and load progress.">Info</button>
             <button class="segmented-button" type="button" id="tab-export-button" data-inspector-tab="export" role="tab" aria-selected="false" title="Choose which splats to save.">Export</button>
           </div>
@@ -389,6 +390,46 @@
                 <div class="button-stack">
                   <button class="toolbar-button" type="button" id="reset-rotation-button" title="Reset the splat transform back to the default values.">Reset Transform</button>
                 </div>
+              </div>
+            </section>
+
+            <section class="inspector-panel" id="inspector-align" data-inspector-panel="align" role="tabpanel" hidden>
+              <div class="field-stack">
+                <div class="section-heading section-heading-sub">
+                  <p class="section-label">Rigid Align</p>
+                  <div class="section-title-row">
+                    <span
+                      class="hint-badge"
+                      title="Pick matching points on Source and Target splats. Apply moves, rotates, and uniformly scales Source onto Target."
+                      aria-label="Rigid alignment help"
+                    >?</span>
+                  </div>
+                </div>
+                <p class="progress-label">Select two splats, add matching numbered markers (3 or more), then align Source to Target.</p>
+                <label class="field" title="The splat that will be transformed when alignment is applied.">
+                  <span>Source Splat</span>
+                  <select id="align-source-select"></select>
+                </label>
+                <label class="field" title="The fixed splat used as the alignment target.">
+                  <span>Target Splat</span>
+                  <select id="align-target-select"></select>
+                </label>
+                <label class="field" title="Choose which splat receives the next picked marker.">
+                  <span>Point Set</span>
+                  <select id="align-role-select">
+                    <option value="source" selected>Source points</option>
+                    <option value="target">Target points</option>
+                  </select>
+                </label>
+                <div class="button-pair">
+                  <button class="toolbar-button" type="button" id="align-add-point-button" title="Click this, then click the selected source or target splat in the viewer to add the next numbered marker.">Add Point</button>
+                  <button class="toolbar-button" type="button" id="align-clear-points-button" title="Clear all alignment markers.">Clear Points</button>
+                </div>
+                <div class="button-stack">
+                  <button class="toolbar-button toolbar-button-primary" type="button" id="align-apply-button" title="Move, rotate, and uniformly scale Source so its markers match Target markers.">Apply Alignment</button>
+                </div>
+                <p class="progress-label" id="align-status">Need two splats and 3 matching point pairs.</p>
+                <div class="align-point-list" id="align-point-list"></div>
               </div>
             </section>
 

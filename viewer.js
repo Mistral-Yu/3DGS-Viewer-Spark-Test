@@ -4,6 +4,7 @@ import { TransformControls } from "./vendor/three/examples/jsm/controls/Transfor
 import * as Spark from "./vendor/spark/spark.module.js";
 import { computeLayoutMode, computePanelWidths, computeShellSize, computeUiScale } from "./viewer-layout.mjs";
 import { buildLodChipLabel, buildLodInfoLabel, buildSplatMeshLoadOptions, detectLodAvailability } from "./viewer-lod.mjs";
+import { computeRigidAlignment, formatAlignPointLabel } from "./viewer-align.mjs";
 import {
   applyToneCurveToLinearRgb,
   buildToneCurveSvgPathData,
@@ -215,6 +216,14 @@ function startSparkViewer() {
       animationScriptStatus: document.getElementById("animation-script-status"),
       animationTimeLabel: document.getElementById("animation-time-label"),
       animationTimeRange: document.getElementById("animation-time-range"),
+      alignAddPointButton: document.getElementById("align-add-point-button"),
+      alignApplyButton: document.getElementById("align-apply-button"),
+      alignClearPointsButton: document.getElementById("align-clear-points-button"),
+      alignPointList: document.getElementById("align-point-list"),
+      alignRoleSelect: document.getElementById("align-role-select"),
+      alignSourceSelect: document.getElementById("align-source-select"),
+      alignStatus: document.getElementById("align-status"),
+      alignTargetSelect: document.getElementById("align-target-select"),
       primitiveSelect: document.getElementById("primitive-select"),
       modeButtons: Array.from(document.querySelectorAll("[data-mode]")),
       modeDescription: document.getElementById("mode-description"),
@@ -1219,6 +1228,9 @@ function startSparkViewer() {
         this.hoverReadout = "Hover -";
         this.pickedColors = [];
         this.pickedColorSerial = 0;
+        this.alignPoints = { source: [], target: [] };
+        this.alignMarkers = [];
+        this.alignPickMode = false;
         this.lightOccluderSamples = [];
         this.runtimeLightOccluders = [];
         this.activeLightCount = 0;
@@ -1383,6 +1395,7 @@ function startSparkViewer() {
         this.syncLightList();
         this.syncAnimationEditor();
         this.syncAnimationControls(true);
+        this.syncAlignUi();
         if (this.dom.colorspaceChip) {
           this.dom.colorspaceChip.textContent = "Display sRGB";
         }
@@ -1409,6 +1422,12 @@ function startSparkViewer() {
         this.renderer.domElement.addEventListener("dblclick", (event) => this.focusPick(event));
         this.renderer.domElement.addEventListener("contextmenu", (event) => event.preventDefault());
         this.renderer.domElement.addEventListener("pointerdown", (event) => {
+          if (this.alignPickMode && event.button === 0) {
+            event.preventDefault();
+            event.stopPropagation();
+            this.pickAlignPoint(event);
+            return;
+          }
           if (this.isColorPickMode && event.button === 0) {
             event.preventDefault();
             event.stopPropagation();
@@ -1543,6 +1562,12 @@ function startSparkViewer() {
         this.dom.clearPickedColorsButton?.addEventListener("click", () => {
           this.clearPickedColors();
         });
+        this.dom.alignSourceSelect?.addEventListener("change", () => this.syncAlignUi());
+        this.dom.alignTargetSelect?.addEventListener("change", () => this.syncAlignUi());
+        this.dom.alignRoleSelect?.addEventListener("change", () => this.syncAlignUi());
+        this.dom.alignAddPointButton?.addEventListener("click", () => this.startAlignPointPick());
+        this.dom.alignClearPointsButton?.addEventListener("click", () => this.clearAlignPoints());
+        this.dom.alignApplyButton?.addEventListener("click", () => this.applyAlignment());
         this.dom.addPointLightButton?.addEventListener("click", () => {
           this.addPointLight();
         });
@@ -2283,6 +2308,7 @@ function startSparkViewer() {
         this.updateNormalizeFieldState();
         this.updateMetaUi();
         this.syncSceneList();
+        this.syncAlignUi();
         this.syncLightList();
         this.syncTransformGizmo();
         this.updateTransformGizmoButtons();
@@ -2307,6 +2333,7 @@ function startSparkViewer() {
         this.updateNormalizeFieldState();
         this.updateMetaUi();
         this.syncSceneList();
+        this.syncAlignUi();
         this.syncLightList();
         this.updateTransformGizmoButtons();
         if (this.hoverPointer) {
@@ -2324,6 +2351,206 @@ function startSparkViewer() {
           this.updateStatus(`Selected ${item.modelMeta.name}`);
         }
         this.invalidateRender();
+      }
+
+      getAlignSelection(role) {
+        const select = role === "target" ? this.dom.alignTargetSelect : this.dom.alignSourceSelect;
+        return this.sceneItems.find((item) => item.id === select?.value) || null;
+      }
+
+      ensureAlignSelections() {
+        if (!this.dom.alignSourceSelect || !this.dom.alignTargetSelect) {
+          return;
+        }
+        const ids = this.sceneItems.map((item) => item.id);
+        if (!ids.includes(this.dom.alignSourceSelect.value)) {
+          this.dom.alignSourceSelect.value = ids[0] || "";
+        }
+        if (!ids.includes(this.dom.alignTargetSelect.value) || this.dom.alignTargetSelect.value === this.dom.alignSourceSelect.value) {
+          this.dom.alignTargetSelect.value = ids.find((id) => id !== this.dom.alignSourceSelect.value) || ids[1] || ids[0] || "";
+        }
+      }
+
+      syncAlignUi() {
+        if (!this.dom.alignSourceSelect || !this.dom.alignTargetSelect) {
+          return;
+        }
+        const previousSource = this.dom.alignSourceSelect.value;
+        const previousTarget = this.dom.alignTargetSelect.value;
+        const buildOptions = (selectedId) => this.sceneItems.map((item, index) => {
+          const label = `${index + 1}. ${item.modelMeta.name}`;
+          return `<option value="${item.id}"${item.id === selectedId ? " selected" : ""}>${label}</option>`;
+        }).join("");
+        this.dom.alignSourceSelect.innerHTML = buildOptions(previousSource);
+        this.dom.alignTargetSelect.innerHTML = buildOptions(previousTarget);
+        this.ensureAlignSelections();
+        this.renderAlignPointList();
+        const pairs = Math.min(this.alignPoints.source.length, this.alignPoints.target.length);
+        const ready = this.sceneItems.length >= 2
+          && this.dom.alignSourceSelect.value
+          && this.dom.alignTargetSelect.value
+          && this.dom.alignSourceSelect.value !== this.dom.alignTargetSelect.value
+          && pairs >= 3;
+        if (this.dom.alignApplyButton) {
+          this.dom.alignApplyButton.disabled = !ready;
+        }
+        if (this.dom.alignAddPointButton) {
+          this.dom.alignAddPointButton.disabled = this.sceneItems.length < 1;
+          this.dom.alignAddPointButton.classList.toggle("is-active", this.alignPickMode);
+          this.dom.alignAddPointButton.textContent = this.alignPickMode ? "Click Splat..." : "Add Point";
+        }
+        if (this.dom.alignStatus) {
+          this.dom.alignStatus.textContent = ready
+            ? `${pairs} matching pairs ready. Source will align to Target.`
+            : `Need two splats and 3 matching point pairs. Current pairs: ${pairs}.`;
+        }
+      }
+
+      renderAlignPointList() {
+        if (!this.dom.alignPointList) {
+          return;
+        }
+        const count = Math.max(this.alignPoints.source.length, this.alignPoints.target.length);
+        this.dom.alignPointList.innerHTML = "";
+        for (let index = 0; index < count; index += 1) {
+          const row = document.createElement("div");
+          row.className = "align-point-row";
+          const label = document.createElement("span");
+          label.className = "align-point-label";
+          label.textContent = `#${index + 1}`;
+          const source = document.createElement("span");
+          source.textContent = this.alignPoints.source[index]
+            ? `${formatAlignPointLabel({ role: "source", index: index + 1 })} ${formatVector(this.alignPoints.source[index])}`
+            : "S- missing";
+          const target = document.createElement("span");
+          target.textContent = this.alignPoints.target[index]
+            ? `${formatAlignPointLabel({ role: "target", index: index + 1 })} ${formatVector(this.alignPoints.target[index])}`
+            : "T- missing";
+          row.append(label, source, target);
+          this.dom.alignPointList.append(row);
+        }
+      }
+
+      startAlignPointPick() {
+        this.alignPickMode = true;
+        this.syncAlignUi();
+        const role = this.dom.alignRoleSelect?.value === "target" ? "target" : "source";
+        const item = this.getAlignSelection(role);
+        this.updateStatus(item
+          ? `Click ${item.modelMeta.name} to add ${formatAlignPointLabel({ role, index: this.alignPoints[role].length + 1 })}`
+          : "Select an align splat first");
+      }
+
+      pickAlignPoint(event) {
+        const role = this.dom.alignRoleSelect?.value === "target" ? "target" : "source";
+        const expectedItem = this.getAlignSelection(role);
+        if (!expectedItem?.mesh) {
+          this.alignPickMode = false;
+          this.syncAlignUi();
+          this.updateStatus("Select a loaded splat before adding align points");
+          return;
+        }
+        const rect = this.renderer.domElement.getBoundingClientRect();
+        this.pointer.x = ((event.clientX - rect.left) / rect.width) * 2 - 1;
+        this.pointer.y = -(((event.clientY - rect.top) / rect.height) * 2 - 1);
+        this.raycaster.setFromCamera(this.pointer, this.camera);
+        const hits = this.raycaster.intersectObjects([expectedItem.mesh], true);
+        if (!hits.length) {
+          this.updateStatus(`No hit on ${expectedItem.modelMeta.name}; try again`);
+          this.forceVisualRefresh(1);
+          return;
+        }
+        const point = hits[0].point.clone();
+        this.alignPoints[role].push(point);
+        this.addAlignMarker({ role, index: this.alignPoints[role].length, point });
+        this.alignPickMode = false;
+        this.syncAlignUi();
+        this.updateStatus(`Added ${formatAlignPointLabel({ role, index: this.alignPoints[role].length })} at ${formatVector(point)}`);
+        this.forceVisualRefresh(3);
+      }
+
+      addAlignMarker({ role, index, point }) {
+        const color = role === "target" ? 0xf97316 : 0x22c55e;
+        const radius = Math.max((this.sceneBoundsSphere?.radius ?? 1) * 0.012, 0.015);
+        const marker = new THREE.Group();
+        const sphere = new THREE.Mesh(
+          new THREE.SphereGeometry(radius, 16, 12),
+          new THREE.MeshBasicMaterial({ color, depthTest: false }),
+        );
+        marker.add(sphere);
+        marker.position.copy(point);
+        marker.name = formatAlignPointLabel({ role, index });
+        marker.renderOrder = 20;
+        this.scene.add(marker);
+        this.alignMarkers.push(marker);
+      }
+
+      clearAlignPoints() {
+        this.alignPoints = { source: [], target: [] };
+        this.alignMarkers.forEach((marker) => this.scene.remove(marker));
+        this.alignMarkers = [];
+        this.alignPickMode = false;
+        this.syncAlignUi();
+        this.updateStatus("Alignment points cleared");
+        this.invalidateRender();
+      }
+
+      applyAlignment() {
+        const sourceItem = this.getAlignSelection("source");
+        const targetItem = this.getAlignSelection("target");
+        if (!sourceItem || !targetItem || sourceItem.id === targetItem.id) {
+          this.updateStatus("Choose different Source and Target splats before aligning");
+          return;
+        }
+        try {
+          const transform = computeRigidAlignment({
+            sourcePoints: this.alignPoints.source,
+            targetPoints: this.alignPoints.target,
+          });
+          const matrix4 = new THREE.Matrix4().makeRotationFromQuaternion(new THREE.Quaternion(
+            transform.quaternion.x,
+            transform.quaternion.y,
+            transform.quaternion.z,
+            transform.quaternion.w,
+          ));
+          matrix4.scale(new THREE.Vector3(transform.scale, transform.scale, transform.scale));
+          matrix4.setPosition(transform.translation.x, transform.translation.y, transform.translation.z);
+          sourceItem.modelRoot.updateMatrixWorld(true);
+          const nextWorld = matrix4.multiply(sourceItem.modelRoot.matrixWorld.clone());
+          const parentInverse = sourceItem.modelRoot.parent
+            ? sourceItem.modelRoot.parent.matrixWorld.clone().invert()
+            : new THREE.Matrix4();
+          matrix4.copy(parentInverse.multiply(nextWorld));
+          const translation = new THREE.Vector3();
+          const quaternion = new THREE.Quaternion();
+          const scaleVector = new THREE.Vector3();
+          matrix4.decompose(translation, quaternion, scaleVector);
+          sourceItem.modelRoot.position.copy(translation);
+          sourceItem.rotationPivot.quaternion.copy(quaternion);
+          sourceItem.rotationPivot.rotation.setFromQuaternion(quaternion, "XYZ");
+          sourceItem.rotationPivot.scale.setScalar((scaleVector.x + scaleVector.y + scaleVector.z) / 3);
+          sourceItem.transform.translateX = sourceItem.modelRoot.position.x;
+          sourceItem.transform.translateY = sourceItem.modelRoot.position.y;
+          sourceItem.transform.translateZ = sourceItem.modelRoot.position.z;
+          sourceItem.transform.rotationX = THREE.MathUtils.radToDeg(sourceItem.rotationPivot.rotation.x);
+          sourceItem.transform.rotationY = THREE.MathUtils.radToDeg(sourceItem.rotationPivot.rotation.y);
+          sourceItem.transform.rotationZ = THREE.MathUtils.radToDeg(sourceItem.rotationPivot.rotation.z);
+          sourceItem.transform.scale = sourceItem.rotationPivot.scale.x;
+          this.selectSceneItem(sourceItem.id, false);
+          this.syncTransformInputs();
+          this.syncVisibleSceneItemTransforms();
+          this.recomputeBounds();
+          this.recomputeSceneBounds();
+          this.refreshHelpers();
+          this.updateCameraClipping();
+          this.refreshLightingModel();
+          this.updateMetaUi();
+          this.syncAlignUi();
+          this.updateStatus(`Aligned ${sourceItem.modelMeta.name} to ${targetItem.modelMeta.name} using ${transform.pairCount} pairs`);
+          this.forceVisualRefresh(4);
+        } catch (error) {
+          this.updateStatus(error instanceof Error ? error.message : "Alignment failed");
+        }
       }
 
       toggleTransformGizmo() {
@@ -4603,6 +4830,7 @@ function startSparkViewer() {
           item.mesh.updateGenerator?.();
         }
         this.recomputeSceneBounds();
+        this.syncAlignUi();
         this.refreshHelpers();
         this.updateCameraClipping();
         this.syncTransformGizmo();
@@ -4622,6 +4850,7 @@ function startSparkViewer() {
         const wasSelected = item.id === this.selectedSceneItemId;
         this.disposeSceneItem(item);
         this.recomputeSceneBounds();
+        this.syncAlignUi();
         if (wasSelected) {
           const nextItem = this.sceneItems[index] || this.sceneItems[index - 1] || null;
           this.selectSceneItem(nextItem?.id ?? null, false);
@@ -6105,9 +6334,12 @@ function startSparkViewer() {
       }
 
       setInspectorTab(tab) {
-        const nextTab = ["scene", "color", "light", "animation", "info", "export"].includes(tab) ? tab : "scene";
+        const nextTab = ["scene", "color", "light", "animation", "align", "info", "export"].includes(tab) ? tab : "scene";
         this.state.inspectorTab = nextTab;
         this.syncInspectorTabs();
+        if (nextTab === "align") {
+          this.syncAlignUi();
+        }
         const label = nextTab === "scene"
           ? "Splats"
           : `${nextTab[0].toUpperCase()}${nextTab.slice(1)}`;

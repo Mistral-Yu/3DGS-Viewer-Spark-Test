@@ -55,14 +55,15 @@ test('open file actions expose the auto-lod toggle beside file loading and viewe
   assert.match(css, /\.hud-chip-lod/);
 });
 
-test('inspector tabs stay pinned to a stable two-row grid', () => {
+test('inspector tabs stay pinned to a compact multi-row grid', () => {
   const tabsMatch = html.match(/<div class="inspector-tabs" role="tablist" aria-label="Inspector tabs">[\s\S]*?<\/div>/);
   assert.ok(tabsMatch, 'inspector tablist should exist');
   assert.match(tabsMatch[0], /id="tab-scene-button"/);
+  assert.match(tabsMatch[0], /id="tab-align-button"/);
   assert.match(tabsMatch[0], /id="tab-export-button"/);
-  assert.equal((tabsMatch[0].match(/data-inspector-tab=/g) || []).length, 6);
-  assert.match(css, /\.inspector-tabs\s*\{[\s\S]*grid-template-columns:\s*repeat\(3, minmax\(0, 1fr\)\)/);
-  assert.doesNotMatch(css, /\.inspector-tabs\s*\{[\s\S]*grid-template-columns:\s*repeat\(6, minmax\(0, 1fr\)\)/);
+  assert.equal((tabsMatch[0].match(/data-inspector-tab=/g) || []).length, 7);
+  assert.match(css, /\.inspector-tabs\s*\{[\s\S]*grid-template-columns:\s*repeat\(4, minmax\(0, 1fr\)\)/);
+  assert.doesNotMatch(css, /\.inspector-tabs\s*\{[\s\S]*grid-template-columns:\s*repeat\(7, minmax\(0, 1fr\)\)/);
 });
 
 test('inspector sections rely on the green labels instead of duplicated white h2 headings', () => {
