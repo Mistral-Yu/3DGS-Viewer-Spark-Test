@@ -2427,15 +2427,18 @@ function startSparkViewer() {
           const label = document.createElement("span");
           label.className = "align-point-label";
           label.textContent = `#${index + 1}`;
+          const editors = document.createElement("div");
+          editors.className = "align-point-editors";
           const source = this.createAlignPointEditor({ role: "source", index, point: this.alignPoints.source[index] });
           const target = this.createAlignPointEditor({ role: "target", index, point: this.alignPoints.target[index] });
+          editors.append(source, target);
           const removeButton = document.createElement("button");
           removeButton.className = "toolbar-button align-point-remove-button";
           removeButton.type = "button";
           removeButton.textContent = "Remove";
           removeButton.title = `Remove marker pair #${index + 1}`;
           removeButton.addEventListener("click", () => this.removeAlignPointPair(index));
-          row.append(label, source, target, removeButton);
+          row.append(label, editors, removeButton);
           this.dom.alignPointList.append(row);
         }
       }
@@ -2450,6 +2453,11 @@ function startSparkViewer() {
           : `${role === "source" ? "S" : "T"}-`;
         wrapper.append(title);
         ["x", "y", "z"].forEach((axis) => {
+          const axisField = document.createElement("label");
+          axisField.className = "align-point-coordinate-field";
+          const axisLabel = document.createElement("span");
+          axisLabel.className = "align-point-axis-label";
+          axisLabel.textContent = axis.toUpperCase();
           const input = document.createElement("input");
           input.className = "text-input align-point-coordinate-input";
           input.type = "number";
@@ -2467,7 +2475,8 @@ function startSparkViewer() {
               input.blur();
             }
           });
-          wrapper.append(input);
+          axisField.append(axisLabel, input);
+          wrapper.append(axisField);
         });
         return wrapper;
       }

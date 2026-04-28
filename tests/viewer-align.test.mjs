@@ -98,6 +98,43 @@ test("index exposes an Align inspector tab with source, target, point, apply, an
   assert.match(indexHtml, /id="align-reset-button"/);
 });
 
+test("align final apply and reset actions render after status and editable point list", () => {
+  const statusIndex = indexHtml.indexOf('id="align-status"');
+  const pointListIndex = indexHtml.indexOf('id="align-point-list"');
+  const finalActionsIndex = indexHtml.indexOf('class="align-actions align-actions-final"');
+  const applyIndex = indexHtml.indexOf('id="align-apply-button"');
+  const resetIndex = indexHtml.indexOf('id="align-reset-button"');
+
+  assert.ok(statusIndex > -1, "align status exists");
+  assert.ok(pointListIndex > statusIndex, "point list follows the status block");
+  assert.ok(finalActionsIndex > pointListIndex, "final actions follow the point list");
+  assert.ok(applyIndex > finalActionsIndex, "apply action is inside the final action group");
+  assert.ok(resetIndex > applyIndex, "reset follows apply inside final actions");
+});
+
+test("align point editor renders stacked rows with visible axis labels and preserved input wiring", () => {
+  assert.match(viewerSource, /row\.className = "align-point-row"/);
+  assert.match(viewerSource, /editors\.className = "align-point-editors"/);
+  assert.match(viewerSource, /axisField\.className = "align-point-coordinate-field"/);
+  assert.match(viewerSource, /axisLabel\.className = "align-point-axis-label"/);
+  assert.match(viewerSource, /axisLabel\.textContent = axis\.toUpperCase\(\)/);
+  assert.match(viewerSource, /axisField\.append\(axisLabel, input\)/);
+  assert.match(viewerSource, /input\.dataset\.alignRole = role/);
+  assert.match(viewerSource, /input\.dataset\.alignIndex = String\(index\)/);
+  assert.match(viewerSource, /input\.dataset\.alignAxis = axis/);
+});
+
+test("align styles use a subtle status block and row-level destructive remove action", () => {
+  const viewerCss = fs.readFileSync(path.join(projectRoot, "viewer.css"), "utf8");
+
+  assert.match(viewerCss, /\.align-status\s*{/);
+  assert.match(viewerCss, /\.align-actions-final\s*{/);
+  assert.match(viewerCss, /\.align-point-editors\s*{/);
+  assert.match(viewerCss, /\.align-point-coordinate-field\s*{/);
+  assert.match(viewerCss, /\.align-point-axis-label\s*{/);
+  assert.match(viewerCss, /\.align-point-remove-button\s*{[^}]*color:\s*#fca5a5/s);
+});
+
 test("viewer wires align controls, editable points, reset, and applies results into splat transforms", () => {
   assert.match(viewerSource, /import .*computeRigidAlignment.*from "\.\/viewer-align\.mjs"/s);
   assert.match(viewerSource, /alignSourceSelect: document\.getElementById\("align-source-select"\)/);
