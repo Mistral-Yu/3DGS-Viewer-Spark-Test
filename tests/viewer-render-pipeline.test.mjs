@@ -58,6 +58,15 @@ test('animation script status reflects loaded, applied, and playing states', () 
   assert.match(source, /playAnimation\(\)[\s\S]*this\.syncAnimationScriptStatus\(\);[\s\S]*this\.updateStatus\(`Playing/);
 });
 
+test('brush editing exposes relative controls, z-depth limiting, and viewport overlay helpers', () => {
+  assert.match(source, /brushRelativeToSplatSize:\s*false/);
+  assert.match(source, /brushDepthLimit:\s*0\.35/);
+  assert.match(source, /createBrushOverlay\(\) \{/);
+  assert.match(source, /Brush Influence Overlay/);
+  assert.match(source, /isSplatWithinBrushDepth\(item, centerViewZ, geometry\.center, depthLimitWorld\)/);
+  assert.match(source, /BRUSH_STRENGTH_LIMITS = \{ min: -8, max: 8 \}/);
+});
+
 test('info panel metadata includes auto-lod and load-mode summaries', () => {
   assert.match(source, /infoAutoLod: document\.getElementById\("info-auto-lod"\)/);
   assert.match(source, /infoLoadMode: document\.getElementById\("info-load-mode"\)/);

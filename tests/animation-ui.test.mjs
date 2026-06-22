@@ -75,9 +75,12 @@ test('brush tab exposes move and standard splat sculpt controls', () => {
   assert.match(panel, /id="brush-undo-button"/);
   assert.match(panel, /id="brush-mode-select"[\s\S]*value="move" selected[\s\S]*value="standard"/);
   assert.match(panel, /id="brush-radius-range"/);
-  assert.match(panel, /id="brush-strength-range"/);
+  assert.match(panel, /id="brush-strength-range"[^>]*min="-2"[^>]*max="2"/);
+  assert.match(panel, /id="brush-relative-checkbox"/);
+  assert.match(panel, /id="brush-depth-range"/);
   assert.match(panel, /id="brush-scale-range"/);
   assert.match(css, /\.viewer-stage\.is-brushing/);
+  assert.match(css, /\.checkbox-row/);
 });
 
 test('inspector sections rely on the green labels instead of duplicated white h2 headings', () => {

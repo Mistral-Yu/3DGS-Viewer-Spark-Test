@@ -452,6 +452,23 @@ code {
   cursor: crosshair;
 }
 
+.checkbox-row {
+  align-items: center;
+  color: var(--muted);
+  display: flex;
+  font-size: calc(0.72rem * var(--ui-scale));
+  gap: calc(0.45rem * var(--ui-scale));
+  line-height: 1.35;
+}
+
+.checkbox-row input[type="checkbox"] {
+  accent-color: var(--accent);
+}
+
+.checkbox-row-inline {
+  min-height: calc(2rem * var(--ui-scale));
+}
+
 .timeline-panel {
   display: grid;
   gap: var(--space-2);
