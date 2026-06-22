@@ -65551,6 +65551,7 @@ ${" ".repeat(spaces)}`);
     const BRUSH_SCALE_LIMITS = { min: 0.05, max: 8 };
     const BRUSH_DEPTH_LIMITS = { min: 0, max: 1e3 };
     const BRUSH_OVERLAY_SEGMENTS = 96;
+    const BRUSH_OVERLAY_POINT_LIMIT = 900;
     const LIGHT_OCCLUDER_LIMIT = 96;
     const TRANSLATE_LIMITS = { min: -1e5, max: 1e5 };
     const FPS_KEYS = /* @__PURE__ */ new Set(["KeyW", "KeyA", "KeyS", "KeyD", "KeyQ", "KeyE", "ShiftLeft", "ShiftRight"]);
@@ -66639,6 +66640,7 @@ ${" ".repeat(spaces)}`);
         this.brushInfluenceRing = null;
         this.brushDepthFrontRing = null;
         this.brushDepthBackRing = null;
+        this.brushInfluencePoints = null;
         this.lastAlignmentSnapshot = null;
         this.lightOccluderSamples = [];
         this.runtimeLightOccluders = [];
@@ -69446,7 +69448,7 @@ alpha ${display.alpha.toFixed(display.alpha < 10 ? 2 : 1)}`;
         }
         this.setSectionDisabled(this.dom.brushControlsSection, !editable, [this.dom.brushToggleButton, this.dom.brushUndoButton]);
         if (this.dom.brushStatus) {
-          this.dom.brushStatus.textContent = editable ? this.brushEnabled ? `${this.state.brushMode === "standard" ? "Standard" : "Move"} brush active. Left-drag on the selected splat; hold Shift to invert Standard.` : "Brush is off. Enable it, then left-drag in the viewport." : "Select a splat item before brushing.";
+          this.dom.brushStatus.textContent = editable ? this.brushEnabled ? `${this.state.brushMode === "standard" ? "Standard" : "Move"} brush active. Move drags the selected splats to the pointer; Standard pushes along camera Z.` : "Brush is off. Enable it, then left-drag in the viewport." : "Select a splat item before brushing.";
         }
         this.dom.stage?.classList.toggle("is-brushing", this.brushEnabled);
         if (!this.brushEnabled || !editable) {
@@ -69521,11 +69523,30 @@ alpha ${display.alpha.toFixed(display.alpha < 10 ? 2 : 1)}`;
         this.brushInfluenceRing = this.createBrushRing(6674175, 0.72);
         this.brushDepthFrontRing = this.createBrushRing(16762967, 0.46);
         this.brushDepthBackRing = this.createBrushRing(16743001, 0.46);
+        const influenceGeometry = new BufferGeometry();
+        influenceGeometry.setAttribute("position", new Float32BufferAttribute(new Float32Array(BRUSH_OVERLAY_POINT_LIMIT * 3), 3));
+        influenceGeometry.setAttribute("color", new Float32BufferAttribute(new Float32Array(BRUSH_OVERLAY_POINT_LIMIT * 3), 3));
+        influenceGeometry.setDrawRange(0, 0);
+        this.brushInfluencePoints = new Points(
+          influenceGeometry,
+          new PointsMaterial({
+            depthTest: false,
+            depthWrite: false,
+            opacity: 0.92,
+            size: 0.025,
+            sizeAttenuation: true,
+            transparent: true,
+            vertexColors: true
+          })
+        );
+        this.brushInfluencePoints.frustumCulled = false;
+        this.brushInfluencePoints.renderOrder = 1001;
         this.brushOverlayGroup.add(
           this.brushDepthBackRing,
           this.brushDepthFrontRing,
           this.brushInfluenceRing,
-          this.brushRadiusRing
+          this.brushRadiusRing,
+          this.brushInfluencePoints
         );
         this.scene.add(this.brushOverlayGroup);
       }
@@ -69577,6 +69598,7 @@ alpha ${display.alpha.toFixed(display.alpha < 10 ? 2 : 1)}`;
         this.positionBrushRing(this.brushDepthBackRing, hit.worldPoint, radiusWorld, depthWorld);
         this.brushDepthFrontRing.visible = depthWorld > 0;
         this.brushDepthBackRing.visible = depthWorld > 0;
+        this.updateBrushInfluencePointOverlay(hit);
         this.lastBrushHit = hit;
         if (invalidate) {
           this.invalidateRender();
@@ -69597,6 +69619,54 @@ alpha ${display.alpha.toFixed(display.alpha < 10 ? 2 : 1)}`;
       }
       getBrushDepthLimitWorld(item) {
         return clampNumber(this.state.brushDepthLimit, BRUSH_DEPTH_LIMITS) * this.getBrushWorldScale(item);
+      }
+      getBrushInfluenceFalloff(center, radius, localCenter) {
+        const distance2 = localCenter.distanceTo(center);
+        if (radius <= 0 || distance2 > radius) {
+          return 0;
+        }
+        return (1 - distance2 / radius) ** 2;
+      }
+      updateBrushInfluencePointOverlay(hit) {
+        if (!this.brushInfluencePoints || !hit?.item || !hit.sample) {
+          return;
+        }
+        const item = hit.item;
+        const count = this.getPackedSplatCount(item);
+        const radius = clampNumber(this.state.brushRadius, BRUSH_RADIUS_LIMITS);
+        const center = hit.sample.localPosition.clone();
+        const centerViewZ = hit.worldPoint ? hit.worldPoint.clone().applyMatrix4(this.camera.matrixWorldInverse).z : center.clone().applyMatrix4(item.mesh.matrixWorld).applyMatrix4(this.camera.matrixWorldInverse).z;
+        const depthLimitWorld = this.getBrushDepthLimitWorld(item);
+        const positions = this.brushInfluencePoints.geometry.getAttribute("position");
+        const colors = this.brushInfluencePoints.geometry.getAttribute("color");
+        const stepSize = Math.max(1, Math.ceil((count || 1) / BRUSH_OVERLAY_POINT_LIMIT));
+        let pointIndex = 0;
+        const worldPosition = new Vector3();
+        for (let index = 0; index < count && pointIndex < BRUSH_OVERLAY_POINT_LIMIT; index += stepSize) {
+          const splat = this.getPackedSplatAt(item, index);
+          const geometry = this.cloneSplatGeometryState(splat);
+          if (!geometry) {
+            continue;
+          }
+          const falloff = this.getBrushInfluenceFalloff(center, radius, geometry.center);
+          if (falloff <= 0) {
+            continue;
+          }
+          const passesDepth = this.isSplatWithinBrushDepth(item, centerViewZ, geometry.center, depthLimitWorld);
+          worldPosition.copy(geometry.center).applyMatrix4(item.mesh.matrixWorld);
+          positions.setXYZ(pointIndex, worldPosition.x, worldPosition.y, worldPosition.z);
+          if (passesDepth) {
+            const scalePull = Math.abs(clampNumber(this.state.brushScale, BRUSH_SCALE_LIMITS) - 1);
+            colors.setXYZ(pointIndex, 0.25 + falloff * 0.35 + scalePull * 0.15, 0.95, 1);
+          } else {
+            colors.setXYZ(pointIndex, 1, 0.25 + falloff * 0.25, 0.08);
+          }
+          pointIndex += 1;
+        }
+        positions.needsUpdate = true;
+        colors.needsUpdate = true;
+        this.brushInfluencePoints.geometry.setDrawRange(0, pointIndex);
+        this.brushInfluencePoints.visible = pointIndex > 0;
       }
       isSplatWithinBrushDepth(item, centerViewZ, localCenter, depthLimitWorld) {
         if (depthLimitWorld <= 0) {
@@ -69619,6 +69689,9 @@ alpha ${display.alpha.toFixed(display.alpha < 10 ? 2 : 1)}`;
           itemId: hit.item.id,
           lastClientX: event.clientX,
           lastClientY: event.clientY,
+          startCenter: hit.sample.localPosition.clone(),
+          startWorldPoint: hit.worldPoint?.clone() ?? null,
+          startViewZ: hit.worldPoint ? hit.worldPoint.clone().applyMatrix4(this.camera.matrixWorldInverse).z : hit.sample.localPosition.clone().applyMatrix4(hit.item.mesh.matrixWorld).applyMatrix4(this.camera.matrixWorldInverse).z,
           touched: 0
         };
         this.updateBrushOverlay(hit);
@@ -69654,18 +69727,23 @@ alpha ${display.alpha.toFixed(display.alpha < 10 ? 2 : 1)}`;
         }
       }
       getBrushMoveVector(item, dx, dy, referenceScale = null) {
-        const radius = clampNumber(this.state.brushRadius, BRUSH_RADIUS_LIMITS);
-        const strength = clampNumber(this.state.brushStrength, BRUSH_STRENGTH_LIMITS);
-        const cameraRight = new Vector3(1, 0, 0).applyQuaternion(this.camera.quaternion).normalize();
-        const cameraUp = new Vector3(0, 1, 0).applyQuaternion(this.camera.quaternion).normalize();
-        const worldDelta = cameraRight.multiplyScalar(dx).add(cameraUp.multiplyScalar(-dy));
-        if (worldDelta.lengthSq() < 1e-12 || Math.abs(strength) < 1e-8) {
+        void dx;
+        void dy;
+        void referenceScale;
+        const stroke = this.brushStroke;
+        if (!item?.mesh || !stroke?.startCenter || !this.lastBrushHit?.sample?.localPosition) {
           return new Vector3();
         }
-        const distanceBasis = this.state.brushRelativeToSplatSize && referenceScale ? Math.max(referenceScale, 1e-4) : radius;
-        worldDelta.multiplyScalar(distanceBasis * strength / 90);
-        const inverseDirectionMatrix = item.mesh.matrixWorld.clone().invert();
-        return worldDelta.transformDirection(inverseDirectionMatrix);
+        return this.lastBrushHit.sample.localPosition.clone().sub(stroke.startCenter);
+      }
+      getStandardBrushDirection(item) {
+        const direction = new Vector3();
+        this.camera.getWorldDirection(direction).normalize();
+        direction.transformDirection(item.mesh.matrixWorld.clone().invert());
+        if (direction.lengthSq() < 1e-12) {
+          return new Vector3(0, 0, -1);
+        }
+        return direction.normalize();
       }
       applyBrushAtHit(hit, { dx = 0, dy = 0, invert = false } = {}) {
         const item = hit.item;
@@ -69673,18 +69751,17 @@ alpha ${display.alpha.toFixed(display.alpha < 10 ? 2 : 1)}`;
         const radius = clampNumber(this.state.brushRadius, BRUSH_RADIUS_LIMITS);
         const strength = clampNumber(this.state.brushStrength, BRUSH_STRENGTH_LIMITS);
         const scaleBias = clampNumber(this.state.brushScale, BRUSH_SCALE_LIMITS);
+        const mode = this.state.brushMode === "standard" ? "standard" : "move";
         const editsScale = Math.abs(scaleBias - 1) > 1e-4;
-        if (!count || radius <= 0 || Math.abs(strength) < 1e-8 && !editsScale) {
+        if (!count || radius <= 0 || mode === "standard" && Math.abs(strength) < 1e-8 && !editsScale) {
           return;
         }
         const center = hit.sample.localPosition.clone();
-        const centerViewZ = hit.worldPoint ? hit.worldPoint.clone().applyMatrix4(this.camera.matrixWorldInverse).z : center.clone().applyMatrix4(item.mesh.matrixWorld).applyMatrix4(this.camera.matrixWorldInverse).z;
+        const brushCenter = mode === "move" && this.brushStroke?.startCenter ? this.brushStroke.startCenter.clone() : center;
+        const centerViewZ = mode === "move" && Number.isFinite(this.brushStroke?.startViewZ) ? this.brushStroke.startViewZ : hit.worldPoint ? hit.worldPoint.clone().applyMatrix4(this.camera.matrixWorldInverse).z : center.clone().applyMatrix4(item.mesh.matrixWorld).applyMatrix4(this.camera.matrixWorldInverse).z;
         const depthLimitWorld = this.getBrushDepthLimitWorld(item);
-        const centerSplat = this.getPackedSplatAt(item, hit.sample.splatIndex);
-        const centerGeometry = this.cloneSplatGeometryState(centerSplat);
-        const centerScale = centerGeometry ? this.getSplatAverageScale(centerGeometry) : null;
-        const mode = this.state.brushMode === "standard" ? "standard" : "move";
-        const moveVector = mode === "move" ? this.getBrushMoveVector(item, dx, dy, centerScale) : new Vector3();
+        const moveVector = mode === "move" ? this.getBrushMoveVector(item, dx, dy) : new Vector3();
+        const standardDirection = mode === "standard" ? this.getStandardBrushDirection(item) : new Vector3();
         const standardSign = invert ? -1 : 1;
         let changed = 0;
         for (let index = 0; index < count; index += 1) {
@@ -69693,34 +69770,31 @@ alpha ${display.alpha.toFixed(display.alpha < 10 ? 2 : 1)}`;
           if (!geometry) {
             continue;
           }
-          const distance2 = geometry.center.distanceTo(center);
-          if (distance2 > radius || !this.isSplatWithinBrushDepth(item, centerViewZ, geometry.center, depthLimitWorld)) {
+          const snapshot = this.brushStroke.changes.get(index);
+          const referenceCenter = mode === "move" && snapshot?.center ? snapshot.center : geometry.center;
+          const distance2 = referenceCenter.distanceTo(brushCenter);
+          if (distance2 > radius || !this.isSplatWithinBrushDepth(item, centerViewZ, referenceCenter, depthLimitWorld)) {
             continue;
           }
           const falloff = (1 - distance2 / radius) ** 2;
-          if (!this.brushStroke.changes.has(index)) {
+          if (!snapshot) {
             this.brushStroke.changes.set(index, {
               center: geometry.center.clone(),
               scales: geometry.scales.clone()
             });
           }
-          const nextCenter = geometry.center.clone();
+          const initialSnapshot = this.brushStroke.changes.get(index);
+          const nextCenter = mode === "move" && initialSnapshot?.center ? initialSnapshot.center.clone() : geometry.center.clone();
           const nextScales = geometry.scales.clone();
           const splatScale = this.getSplatAverageScale(geometry);
           if (mode === "move") {
             nextCenter.addScaledVector(moveVector, falloff);
           } else if (Math.abs(strength) >= 1e-8) {
-            const direction = geometry.center.clone().sub(center);
-            if (direction.lengthSq() < 1e-10) {
-              this.camera.getWorldDirection(direction).multiplyScalar(-1);
-              direction.transformDirection(item.mesh.matrixWorld.clone().invert());
-            }
-            direction.normalize();
             const displacementBasis = this.state.brushRelativeToSplatSize ? splatScale : radius * 0.08;
-            nextCenter.addScaledVector(direction, standardSign * strength * falloff * displacementBasis);
+            nextCenter.addScaledVector(standardDirection, standardSign * strength * falloff * displacementBasis);
           }
           if (editsScale) {
-            const scaleWeight = this.state.brushRelativeToSplatSize ? falloff : falloff * Math.min(Math.abs(strength), 1);
+            const scaleWeight = falloff * Math.min(Math.abs(strength), 1);
             const scaleFactor = MathUtils.lerp(1, scaleBias, scaleWeight);
             nextScales.multiplyScalar(scaleFactor).clampScalar(1e-4, 1e6);
           }

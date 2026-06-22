@@ -63,7 +63,13 @@ test('brush editing exposes relative controls, z-depth limiting, and viewport ov
   assert.match(source, /brushDepthLimit:\s*0\.35/);
   assert.match(source, /createBrushOverlay\(\) \{/);
   assert.match(source, /Brush Influence Overlay/);
-  assert.match(source, /isSplatWithinBrushDepth\(item, centerViewZ, geometry\.center, depthLimitWorld\)/);
+  assert.match(source, /new THREE\.Points\(/);
+  assert.match(source, /vertexColors:\s*true/);
+  assert.match(source, /getStandardBrushDirection\(item\)/);
+  assert.match(source, /nextCenter\.addScaledVector\(standardDirection, standardSign \* strength \* falloff \* displacementBasis\)/);
+  assert.match(source, /const referenceCenter = mode === "move" && snapshot\?\.center \? snapshot\.center : geometry\.center;/);
+  assert.match(source, /const scaleWeight = falloff \* Math\.min\(Math\.abs\(strength\), 1\);/);
+  assert.match(source, /isSplatWithinBrushDepth\(item, centerViewZ, referenceCenter, depthLimitWorld\)/);
   assert.match(source, /BRUSH_STRENGTH_LIMITS = \{ min: -8, max: 8 \}/);
 });
 

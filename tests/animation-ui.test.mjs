@@ -76,6 +76,8 @@ test('brush tab exposes move and standard splat sculpt controls', () => {
   assert.match(panel, /id="brush-mode-select"[\s\S]*value="move" selected[\s\S]*value="standard"/);
   assert.match(panel, /id="brush-radius-range"/);
   assert.match(panel, /id="brush-strength-range"[^>]*min="-2"[^>]*max="2"/);
+  assert.match(panel, /Relative Strength/);
+  assert.match(panel, /Strength follows Gaussian size/);
   assert.match(panel, /id="brush-relative-checkbox"/);
   assert.match(panel, /id="brush-depth-range"/);
   assert.match(panel, /id="brush-scale-range"/);
