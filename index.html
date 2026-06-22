@@ -450,13 +450,15 @@
                 <p class="progress-label" id="brush-status">Select a splat, enable Brush, then left-drag in the viewport.</p>
                 <div class="button-pair">
                   <button class="toolbar-button toolbar-button-primary" type="button" id="brush-toggle-button" title="Enable or disable viewport brush editing for the selected splat.">Brush Off</button>
-                  <button class="toolbar-button" type="button" id="brush-undo-button" title="Undo the last brush stroke on the selected splat.">Undo Stroke</button>
+                  <button class="toolbar-button" type="button" id="brush-undo-button" title="Undo the most recent brush stroke on the selected splat.">Undo Stroke</button>
+                  <button class="toolbar-button" type="button" id="brush-reset-button" title="Reset brush settings to the defaults without changing splats.">Reset Settings</button>
                 </div>
                 <label class="field" title="Choose the sculpt operation. Move follows the screen drag direction; Standard inflates or carves along the surface from the brush center.">
                   <span>Brush Type</span>
                   <select id="brush-mode-select">
                     <option value="move" selected>Move</option>
                     <option value="standard">Standard</option>
+                    <option value="scale">Scale</option>
                   </select>
                 </label>
                 <label class="field" title="Brush radius follows the selected splat transform scale, so the viewport influence matches the current visible size.">
@@ -466,11 +468,11 @@
                     <input class="text-input short-input" id="brush-radius-input" type="text" inputmode="decimal" value="0.25">
                   </div>
                 </label>
-                <label class="field" title="Brush strength. Positive values push or follow the drag direction; negative values pull or reverse the drag. Zero is neutral.">
-                  <span>Strength</span>
+                <label class="field" title="Limit brush influence by camera-depth distance from the brush center. This prevents editing splats that are behind or in front of the visible stroke plane.">
+                  <span>Z Depth Limit</span>
                   <div class="field-inline">
-                    <input id="brush-strength-range" type="range" min="-2" max="2" step="0.01" value="0.35">
-                    <input class="text-input short-input" id="brush-strength-input" type="text" inputmode="decimal" value="0.35">
+                    <input id="brush-depth-range" type="range" min="0" max="5" step="0.01" value="0.35">
+                    <input class="text-input short-input" id="brush-depth-input" type="text" inputmode="decimal" value="0.35">
                   </div>
                 </label>
                 <label class="field" title="When enabled, Standard brush strength is scaled by each Gaussian size instead of the brush radius. Radius, Z limit, and Scale Bias range are unchanged.">
@@ -480,18 +482,25 @@
                     <span>Strength follows Gaussian size</span>
                   </div>
                 </label>
-                <label class="field" title="Limit brush influence by camera-depth distance from the brush center. This prevents editing splats that are behind or in front of the visible stroke plane.">
-                  <span>Z Depth Limit</span>
+                <label class="field" title="Brush strength. Positive values push with Standard or apply Scale Bias; negative values pull Standard. Move ignores Strength.">
+                  <span>Strength</span>
                   <div class="field-inline">
-                    <input id="brush-depth-range" type="range" min="0" max="5" step="0.01" value="0.35">
-                    <input class="text-input short-input" id="brush-depth-input" type="text" inputmode="decimal" value="0.35">
+                    <input id="brush-strength-range" type="range" min="-2" max="2" step="0.01" value="0.35">
+                    <input class="text-input short-input" id="brush-strength-input" type="text" inputmode="decimal" value="0.35">
                   </div>
                 </label>
-                <label class="field" title="Scale affected Gaussian splats while brushing. 1 keeps scale unchanged; above 1 fattens the brush mark; below 1 pinches it.">
+                <label class="field" title="Scale brush target. Move and Standard never change splat size; choose Brush Type = Scale to apply this value.">
                   <span>Scale Bias</span>
                   <div class="field-inline">
                     <input id="brush-scale-range" type="range" min="0.25" max="2" step="0.01" value="1">
                     <input class="text-input short-input" id="brush-scale-input" type="text" inputmode="decimal" value="1.00">
+                  </div>
+                </label>
+                <label class="field" title="Maximum number of brush strokes kept in the undo history.">
+                  <span>Undo Levels</span>
+                  <div class="field-inline">
+                    <input id="brush-undo-limit-range" type="range" min="1" max="30" step="1" value="8">
+                    <input class="text-input short-input" id="brush-undo-limit-input" type="text" inputmode="numeric" value="8">
                   </div>
                 </label>
               </div>

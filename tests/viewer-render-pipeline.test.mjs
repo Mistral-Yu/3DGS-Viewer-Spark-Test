@@ -64,6 +64,9 @@ test('brush editing exposes relative controls, z-depth limiting, and viewport ov
   assert.match(source, /createBrushOverlay\(\) \{/);
   assert.match(source, /Brush Influence Overlay/);
   assert.match(source, /new THREE\.Points\(/);
+  assert.match(source, /new THREE\.ShaderMaterial\(/);
+  assert.match(source, /uniforms:\s*\{ opacity:\s*\{ value:\s*0\.34 \} \}/);
+  assert.match(source, /attribute float size;/);
   assert.match(source, /vertexColors:\s*true/);
   assert.match(source, /getStandardBrushDirection\(item\)/);
   assert.match(source, /getBrushRadiusWorld\(item\)/);
@@ -72,9 +75,11 @@ test('brush editing exposes relative controls, z-depth limiting, and viewport ov
   assert.match(source, /const displacementBasisWorld = this\.state\.brushRelativeToSplatSize \? splatScaleWorld : radiusWorld \* 0\.08;/);
   assert.match(source, /nextCenter\.addScaledVector\(standardDirection, standardSign \* strength \* falloff \* displacementBasis\)/);
   assert.match(source, /const referenceCenter = mode === "move" && snapshot\?\.center \? snapshot\.center : geometry\.center;/);
+  assert.match(source, /const editsScale = mode === "scale" && Math\.abs\(scaleBias - 1\) > 1e-4;/);
   assert.match(source, /const scaleWeight = falloff \* Math\.min\(Math\.abs\(strength\), 1\);/);
   assert.match(source, /isSplatWithinBrushDepth\(item, centerViewZ, referenceCenter, depthLimitWorld\)/);
   assert.match(source, /BRUSH_STRENGTH_LIMITS = \{ min: -8, max: 8 \}/);
+  assert.match(source, /brushUndoStack\.push\(\{ itemId: item\.id, changes \}\)/);
 });
 
 test('info panel metadata includes auto-lod and load-mode summaries', () => {

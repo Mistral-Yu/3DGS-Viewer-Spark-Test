@@ -66,21 +66,24 @@ test('inspector tabs stay pinned to a compact multi-row grid', () => {
   assert.doesNotMatch(css, /\.inspector-tabs\s*\{[\s\S]*grid-template-columns:\s*repeat\(7, minmax\(0, 1fr\)\)/);
 });
 
-test('brush tab exposes move and standard splat sculpt controls', () => {
+test('brush tab exposes move, standard, and scale splat sculpt controls', () => {
   const brushMatch = html.match(/<section class="inspector-panel" id="inspector-brush"[\s\S]*?<\/section>/);
   assert.ok(brushMatch, 'brush panel should exist');
   const panel = brushMatch[0];
 
   assert.match(panel, /id="brush-toggle-button"/);
   assert.match(panel, /id="brush-undo-button"/);
-  assert.match(panel, /id="brush-mode-select"[\s\S]*value="move" selected[\s\S]*value="standard"/);
+  assert.match(panel, /id="brush-reset-button"/);
+  assert.match(panel, /id="brush-mode-select"[\s\S]*value="move" selected[\s\S]*value="standard"[\s\S]*value="scale"/);
   assert.match(panel, /id="brush-radius-range"/);
+  assert.match(panel, /id="brush-depth-range"[\s\S]*Relative Strength[\s\S]*id="brush-strength-range"/);
   assert.match(panel, /id="brush-strength-range"[^>]*min="-2"[^>]*max="2"/);
   assert.match(panel, /Relative Strength/);
   assert.match(panel, /Strength follows Gaussian size/);
   assert.match(panel, /id="brush-relative-checkbox"/);
   assert.match(panel, /id="brush-depth-range"/);
   assert.match(panel, /id="brush-scale-range"/);
+  assert.match(panel, /id="brush-undo-limit-range"/);
   assert.match(css, /\.viewer-stage\.is-brushing/);
   assert.match(css, /\.checkbox-row/);
 });

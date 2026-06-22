@@ -74,6 +74,16 @@ function startSparkViewer() {
     const BRUSH_DEPTH_LIMITS = { min: 0, max: 1000 };
     const BRUSH_OVERLAY_SEGMENTS = 96;
     const BRUSH_OVERLAY_POINT_LIMIT = 900;
+    const BRUSH_UNDO_LIMITS = { min: 1, max: 30 };
+    const DEFAULT_BRUSH_SETTINGS = {
+      brushDepthLimit: 0.35,
+      brushMode: "move",
+      brushRadius: 0.25,
+      brushRelativeToSplatSize: false,
+      brushScale: 1,
+      brushStrength: 0.35,
+      brushUndoLimit: 8,
+    };
     const LIGHT_OCCLUDER_LIMIT = 96;
     const TRANSLATE_LIMITS = { min: -100000, max: 100000 };
     const FPS_KEYS = new Set(["KeyW", "KeyA", "KeyS", "KeyD", "KeyQ", "KeyE", "ShiftLeft", "ShiftRight"]);
@@ -245,6 +255,9 @@ function startSparkViewer() {
       brushDepthRange: document.getElementById("brush-depth-range"),
       brushToggleButton: document.getElementById("brush-toggle-button"),
       brushUndoButton: document.getElementById("brush-undo-button"),
+      brushResetButton: document.getElementById("brush-reset-button"),
+      brushUndoLimitInput: document.getElementById("brush-undo-limit-input"),
+      brushUndoLimitRange: document.getElementById("brush-undo-limit-range"),
       brushControlsSection: document.getElementById("brush-controls-section"),
       primitiveSelect: document.getElementById("primitive-select"),
       modeButtons: Array.from(document.querySelectorAll("[data-mode]")),
@@ -1256,6 +1269,7 @@ function startSparkViewer() {
         this.brushEnabled = false;
         this.brushStroke = null;
         this.lastBrushUndo = null;
+        this.brushUndoStack = [];
         this.lastBrushPointer = null;
         this.lastBrushHit = null;
         this.brushOverlayGroup = null;
@@ -1349,12 +1363,7 @@ function startSparkViewer() {
           autoRotate: false,
           autoLodEnabled: false,
           background: "graphite",
-          brushMode: "move",
-          brushRadius: 0.25,
-          brushRelativeToSplatSize: false,
-          brushScale: 1,
-          brushStrength: 0.35,
-          brushDepthLimit: 0.35,
+          ...DEFAULT_BRUSH_SETTINGS,
           depthRange: DEPTH_RANGE_DEFAULT,
           exportFalloff: true,
           exportOpacity: true,
@@ -1629,8 +1638,9 @@ function startSparkViewer() {
         this.dom.alignResetButton?.addEventListener("click", () => this.resetAlignment());
         this.dom.brushToggleButton?.addEventListener("click", () => this.toggleBrushEditing());
         this.dom.brushUndoButton?.addEventListener("click", () => this.undoLastBrushStroke());
+        this.dom.brushResetButton?.addEventListener("click", () => this.resetBrushSettings());
         this.dom.brushModeSelect?.addEventListener("change", (event) => {
-          this.state.brushMode = event.target.value === "standard" ? "standard" : "move";
+          this.state.brushMode = ["move", "standard", "scale"].includes(event.target.value) ? event.target.value : "move";
           this.syncBrushUi(false);
         });
         this.dom.brushRelativeCheckbox?.addEventListener("change", () => {
@@ -1661,6 +1671,12 @@ function startSparkViewer() {
           range: this.dom.brushDepthRange,
           limits: BRUSH_DEPTH_LIMITS,
           onChange: (value, options) => this.setBrushDepthLimit(value, options),
+        });
+        this.bindNumberPair({
+          input: this.dom.brushUndoLimitInput,
+          range: this.dom.brushUndoLimitRange,
+          limits: BRUSH_UNDO_LIMITS,
+          onChange: (value, options) => this.setBrushUndoLimit(value, options),
         });
         this.dom.addPointLightButton?.addEventListener("click", () => {
           this.addPointLight();
@@ -4278,6 +4294,38 @@ function startSparkViewer() {
         this.refreshBrushOverlay();
       }
 
+      setBrushUndoLimit(value, { commit = true, syncInput = true } = {}) {
+        const nextLimit = commit
+          ? Math.round(clampNumber(value, BRUSH_UNDO_LIMITS))
+          : Math.max(BRUSH_UNDO_LIMITS.min, Math.round(Number(value) || this.state.brushUndoLimit));
+        this.state.brushUndoLimit = nextLimit;
+        this.trimBrushUndoStack();
+        this.syncBrushUi(syncInput);
+      }
+
+      resetBrushSettings() {
+        Object.assign(this.state, DEFAULT_BRUSH_SETTINGS);
+        this.syncBrushUi(true);
+        this.refreshBrushOverlay();
+        this.updateStatus("Brush settings reset");
+      }
+
+      getBrushModeLabel() {
+        if (this.state.brushMode === "standard") {
+          return "Standard";
+        }
+        if (this.state.brushMode === "scale") {
+          return "Scale";
+        }
+        return "Move";
+      }
+
+      trimBrushUndoStack() {
+        const limit = Math.round(clampNumber(this.state.brushUndoLimit, BRUSH_UNDO_LIMITS));
+        this.brushUndoStack = (this.brushUndoStack ?? []).slice(-limit);
+        this.lastBrushUndo = this.brushUndoStack[this.brushUndoStack.length - 1] ?? null;
+      }
+
       syncBrushUi(syncInput = true) {
         const item = this.getSelectedItem();
         const editable = Boolean(item?.mesh && this.getEditableSplatStorage(item));
@@ -4315,19 +4363,32 @@ function startSparkViewer() {
         if (syncInput && this.dom.brushScaleInput) {
           this.dom.brushScaleInput.value = formatNumber(this.state.brushScale, 2);
         }
+        if (this.dom.brushUndoLimitRange) {
+          this.dom.brushUndoLimitRange.value = String(Math.round(clampNumber(this.state.brushUndoLimit, BRUSH_UNDO_LIMITS)));
+        }
+        if (syncInput && this.dom.brushUndoLimitInput) {
+          this.dom.brushUndoLimitInput.value = String(Math.round(clampNumber(this.state.brushUndoLimit, BRUSH_UNDO_LIMITS)));
+        }
         if (this.dom.brushToggleButton) {
           this.dom.brushToggleButton.disabled = !editable;
           this.dom.brushToggleButton.classList.toggle("is-active", this.brushEnabled);
           this.dom.brushToggleButton.textContent = this.brushEnabled ? "Brush On" : "Brush Off";
         }
         if (this.dom.brushUndoButton) {
-          this.dom.brushUndoButton.disabled = !this.lastBrushUndo?.changes?.length;
+          this.dom.brushUndoButton.disabled = !this.brushUndoStack?.length;
+          this.dom.brushUndoButton.textContent = this.brushUndoStack?.length
+            ? `Undo Stroke (${this.brushUndoStack.length})`
+            : "Undo Stroke";
         }
-        this.setSectionDisabled(this.dom.brushControlsSection, !editable, [this.dom.brushToggleButton, this.dom.brushUndoButton]);
+        this.setSectionDisabled(this.dom.brushControlsSection, !editable, [
+          this.dom.brushToggleButton,
+          this.dom.brushUndoButton,
+          this.dom.brushResetButton,
+        ]);
         if (this.dom.brushStatus) {
           this.dom.brushStatus.textContent = editable
             ? (this.brushEnabled
-              ? `${this.state.brushMode === "standard" ? "Standard" : "Move"} brush active. Move drags the selected splats to the pointer; Standard pushes along camera Z.`
+              ? `${this.getBrushModeLabel()} brush active. Move changes position only, Standard pushes along camera Z, Scale changes size only.`
               : "Brush is off. Enable it, then left-drag in the viewport.")
             : "Select a splat item before brushing.";
         }
@@ -4412,17 +4473,41 @@ function startSparkViewer() {
         const influenceGeometry = new THREE.BufferGeometry();
         influenceGeometry.setAttribute("position", new THREE.Float32BufferAttribute(new Float32Array(BRUSH_OVERLAY_POINT_LIMIT * 3), 3));
         influenceGeometry.setAttribute("color", new THREE.Float32BufferAttribute(new Float32Array(BRUSH_OVERLAY_POINT_LIMIT * 3), 3));
+        influenceGeometry.setAttribute("size", new THREE.Float32BufferAttribute(new Float32Array(BRUSH_OVERLAY_POINT_LIMIT), 1));
         influenceGeometry.setDrawRange(0, 0);
         this.brushInfluencePoints = new THREE.Points(
           influenceGeometry,
-          new THREE.PointsMaterial({
+          new THREE.ShaderMaterial({
             depthTest: false,
             depthWrite: false,
-            opacity: 0.92,
-            size: 0.025,
-            sizeAttenuation: true,
             transparent: true,
+            toneMapped: false,
+            uniforms: { opacity: { value: 0.34 } },
             vertexColors: true,
+            vertexShader: `
+              attribute float size;
+              attribute vec3 color;
+              varying vec3 vColor;
+              void main() {
+                vColor = color;
+                vec4 mvPosition = modelViewMatrix * vec4(position, 1.0);
+                gl_PointSize = clamp(size * (320.0 / max(-mvPosition.z, 0.001)), 2.0, 22.0);
+                gl_Position = projectionMatrix * mvPosition;
+              }
+            `,
+            fragmentShader: `
+              uniform float opacity;
+              varying vec3 vColor;
+              void main() {
+                vec2 delta = gl_PointCoord - vec2(0.5);
+                float distanceFromCenter = length(delta);
+                if (distanceFromCenter > 0.5) {
+                  discard;
+                }
+                float edge = smoothstep(0.5, 0.32, distanceFromCenter);
+                gl_FragColor = vec4(vColor, opacity * edge);
+              }
+            `,
           }),
         );
         this.brushInfluencePoints.frustumCulled = false;
@@ -4565,6 +4650,7 @@ function startSparkViewer() {
         const depthLimitWorld = this.getBrushDepthLimitWorld(item);
         const positions = this.brushInfluencePoints.geometry.getAttribute("position");
         const colors = this.brushInfluencePoints.geometry.getAttribute("color");
+        const sizes = this.brushInfluencePoints.geometry.getAttribute("size");
         const stepSize = Math.max(1, Math.ceil((count || 1) / BRUSH_OVERLAY_POINT_LIMIT));
         let pointIndex = 0;
         const worldPosition = new THREE.Vector3();
@@ -4588,16 +4674,18 @@ function startSparkViewer() {
           const passesDepth = this.isSplatWithinBrushDepth(item, centerViewZ, geometry.center, depthLimitWorld);
           worldPosition.copy(geometry.center).applyMatrix4(item.mesh.matrixWorld);
           positions.setXYZ(pointIndex, worldPosition.x, worldPosition.y, worldPosition.z);
+          sizes.setX(pointIndex, THREE.MathUtils.clamp(this.getSplatAverageScaleWorld(item, geometry) * (0.9 + falloff * 1.4), 0.006, Math.max(radiusWorld * 0.28, 0.008)));
           if (passesDepth) {
             const scalePull = Math.abs(clampNumber(this.state.brushScale, BRUSH_SCALE_LIMITS) - 1);
-            colors.setXYZ(pointIndex, 0.25 + falloff * 0.35 + scalePull * 0.15, 0.95, 1);
+            colors.setXYZ(pointIndex, 0.1 + falloff * 0.25 + scalePull * 0.12, 0.76, 1);
           } else {
-            colors.setXYZ(pointIndex, 1, 0.25 + falloff * 0.25, 0.08);
+            colors.setXYZ(pointIndex, 1, 0.32 + falloff * 0.2, 0.08);
           }
           pointIndex += 1;
         }
         positions.needsUpdate = true;
         colors.needsUpdate = true;
+        sizes.needsUpdate = true;
         this.brushInfluencePoints.geometry.setDrawRange(0, pointIndex);
         this.brushInfluencePoints.visible = pointIndex > 0;
       }
@@ -4660,7 +4748,10 @@ function startSparkViewer() {
         }
         const item = this.getSceneItemById(this.brushStroke.itemId);
         const changes = [...this.brushStroke.changes.entries()].map(([index, snapshot]) => ({ index, ...snapshot }));
-        this.lastBrushUndo = item && changes.length ? { itemId: item.id, changes } : null;
+        if (item && changes.length) {
+          this.brushUndoStack.push({ itemId: item.id, changes });
+          this.trimBrushUndoStack();
+        }
         const touched = this.brushStroke.touched;
         this.brushStroke = null;
         this.syncBrushUi(false);
@@ -4696,9 +4787,14 @@ function startSparkViewer() {
         const radius = clampNumber(this.state.brushRadius, BRUSH_RADIUS_LIMITS);
         const strength = clampNumber(this.state.brushStrength, BRUSH_STRENGTH_LIMITS);
         const scaleBias = clampNumber(this.state.brushScale, BRUSH_SCALE_LIMITS);
-        const mode = this.state.brushMode === "standard" ? "standard" : "move";
-        const editsScale = Math.abs(scaleBias - 1) > 1e-4;
-        if (!count || radius <= 0 || (mode === "standard" && Math.abs(strength) < 1e-8 && !editsScale)) {
+        const mode = ["move", "standard", "scale"].includes(this.state.brushMode) ? this.state.brushMode : "move";
+        const editsScale = mode === "scale" && Math.abs(scaleBias - 1) > 1e-4;
+        if (
+          !count
+          || radius <= 0
+          || (mode === "standard" && Math.abs(strength) < 1e-8)
+          || (mode === "scale" && !editsScale)
+        ) {
           return;
         }
         const center = hit.sample.localPosition.clone();
@@ -4746,7 +4842,7 @@ function startSparkViewer() {
           const splatScaleWorld = this.getSplatAverageScaleWorld(item, geometry);
           if (mode === "move") {
             nextCenter.addScaledVector(moveVector, falloff);
-          } else if (Math.abs(strength) >= 1e-8) {
+          } else if (mode === "standard" && Math.abs(strength) >= 1e-8) {
             const displacementBasisWorld = this.state.brushRelativeToSplatSize ? splatScaleWorld : radiusWorld * 0.08;
             const displacementBasis = this.worldDistanceToLocalDistance(item, displacementBasisWorld);
             nextCenter.addScaledVector(standardDirection, standardSign * strength * falloff * displacementBasis);
@@ -4779,7 +4875,8 @@ function startSparkViewer() {
       }
 
       undoLastBrushStroke() {
-        const undo = this.lastBrushUndo;
+        const undo = this.brushUndoStack?.pop() ?? null;
+        this.lastBrushUndo = this.brushUndoStack?.[this.brushUndoStack.length - 1] ?? null;
         const item = undo ? this.getSceneItemById(undo.itemId) : null;
         if (!item?.mesh || !undo?.changes?.length) {
           this.updateStatus("No brush stroke to undo");
@@ -4800,7 +4897,6 @@ function startSparkViewer() {
         item.baseCenterBounds = bounds.clone();
         item.baseLocalBounds = bounds.clone();
         this.recomputeBounds();
-        this.lastBrushUndo = null;
         this.renderPickedColors();
         this.invalidateRender();
         this.forceVisualRefresh(3);
