@@ -4450,13 +4450,31 @@ function startSparkViewer() {
           return 1;
         }
         const worldScale = new THREE.Vector3();
+        item.modelRoot?.updateMatrixWorld(true);
+        item.rotationPivot?.updateMatrixWorld(true);
         item.mesh.updateMatrixWorld(true);
         item.mesh.matrixWorld.decompose(new THREE.Vector3(), new THREE.Quaternion(), worldScale);
         return Math.max((Math.abs(worldScale.x) + Math.abs(worldScale.y) + Math.abs(worldScale.z)) / 3, 0.0001);
       }
 
+      getBrushRadiusWorld(item) {
+        return clampNumber(this.state.brushRadius, BRUSH_RADIUS_LIMITS) * this.getBrushWorldScale(item);
+      }
+
+      worldDistanceToLocalDistance(item, worldDistance) {
+        return Number(worldDistance) / this.getBrushWorldScale(item);
+      }
+
+      localDistanceToWorldDistance(item, localDistance) {
+        return Number(localDistance) * this.getBrushWorldScale(item);
+      }
+
       getSplatAverageScale(geometry) {
         return Math.max((geometry.scales.x + geometry.scales.y + geometry.scales.z) / 3, 0.0001);
+      }
+
+      getSplatAverageScaleWorld(item, geometry) {
+        return this.localDistanceToWorldDistance(item, this.getSplatAverageScale(geometry));
       }
 
       positionBrushRing(ring, centerWorld, radiusWorld, depthOffsetWorld = 0) {
@@ -4477,10 +4495,9 @@ function startSparkViewer() {
           this.hideBrushOverlay();
           return;
         }
-        const radius = clampNumber(this.state.brushRadius, BRUSH_RADIUS_LIMITS);
         const depthLimit = clampNumber(this.state.brushDepthLimit, BRUSH_DEPTH_LIMITS);
         const worldScale = this.getBrushWorldScale(hit.item);
-        const radiusWorld = radius * worldScale;
+        const radiusWorld = this.getBrushRadiusWorld(hit.item);
         const depthWorld = depthLimit * worldScale;
         this.brushOverlayGroup.visible = true;
         this.positionBrushRing(this.brushRadiusRing, hit.worldPoint, radiusWorld, 0);
@@ -4523,30 +4540,48 @@ function startSparkViewer() {
         return (1 - (distance / radius)) ** 2;
       }
 
+      getBrushInfluenceFalloffWorld(item, centerWorld, radiusWorld, localCenter, targetWorld = new THREE.Vector3()) {
+        if (!item?.mesh || !centerWorld || radiusWorld <= 0) {
+          return 0;
+        }
+        targetWorld.copy(localCenter).applyMatrix4(item.mesh.matrixWorld);
+        const distanceWorld = targetWorld.distanceTo(centerWorld);
+        if (distanceWorld > radiusWorld) {
+          return 0;
+        }
+        return (1 - (distanceWorld / radiusWorld)) ** 2;
+      }
+
       updateBrushInfluencePointOverlay(hit) {
         if (!this.brushInfluencePoints || !hit?.item || !hit.sample) {
           return;
         }
         const item = hit.item;
         const count = this.getPackedSplatCount(item);
-        const radius = clampNumber(this.state.brushRadius, BRUSH_RADIUS_LIMITS);
         const center = hit.sample.localPosition.clone();
-        const centerViewZ = hit.worldPoint
-          ? hit.worldPoint.clone().applyMatrix4(this.camera.matrixWorldInverse).z
-          : center.clone().applyMatrix4(item.mesh.matrixWorld).applyMatrix4(this.camera.matrixWorldInverse).z;
+        const radiusWorld = this.getBrushRadiusWorld(item);
+        const centerWorld = hit.worldPoint ?? center.clone().applyMatrix4(item.mesh.matrixWorld);
+        const centerViewZ = centerWorld.clone().applyMatrix4(this.camera.matrixWorldInverse).z;
         const depthLimitWorld = this.getBrushDepthLimitWorld(item);
         const positions = this.brushInfluencePoints.geometry.getAttribute("position");
         const colors = this.brushInfluencePoints.geometry.getAttribute("color");
         const stepSize = Math.max(1, Math.ceil((count || 1) / BRUSH_OVERLAY_POINT_LIMIT));
         let pointIndex = 0;
         const worldPosition = new THREE.Vector3();
+        const falloffWorldPosition = new THREE.Vector3();
         for (let index = 0; index < count && pointIndex < BRUSH_OVERLAY_POINT_LIMIT; index += stepSize) {
           const splat = this.getPackedSplatAt(item, index);
           const geometry = this.cloneSplatGeometryState(splat);
           if (!geometry) {
             continue;
           }
-          const falloff = this.getBrushInfluenceFalloff(center, radius, geometry.center);
+          const falloff = this.getBrushInfluenceFalloffWorld(
+            item,
+            centerWorld,
+            radiusWorld,
+            geometry.center,
+            falloffWorldPosition,
+          );
           if (falloff <= 0) {
             continue;
           }
@@ -4667,20 +4702,21 @@ function startSparkViewer() {
           return;
         }
         const center = hit.sample.localPosition.clone();
-        const brushCenter = mode === "move" && this.brushStroke?.startCenter
-          ? this.brushStroke.startCenter.clone()
-          : center;
+        const centerWorld = hit.worldPoint ?? center.clone().applyMatrix4(item.mesh.matrixWorld);
+        const brushCenterWorld = mode === "move" && this.brushStroke?.startWorldPoint
+          ? this.brushStroke.startWorldPoint.clone()
+          : centerWorld;
+        const radiusWorld = this.getBrushRadiusWorld(item);
         const centerViewZ = mode === "move" && Number.isFinite(this.brushStroke?.startViewZ)
           ? this.brushStroke.startViewZ
-          : (hit.worldPoint
-            ? hit.worldPoint.clone().applyMatrix4(this.camera.matrixWorldInverse).z
-            : center.clone().applyMatrix4(item.mesh.matrixWorld).applyMatrix4(this.camera.matrixWorldInverse).z);
+          : centerWorld.clone().applyMatrix4(this.camera.matrixWorldInverse).z;
         const depthLimitWorld = this.getBrushDepthLimitWorld(item);
         const moveVector = mode === "move"
           ? this.getBrushMoveVector(item, dx, dy)
           : new THREE.Vector3();
         const standardDirection = mode === "standard" ? this.getStandardBrushDirection(item) : new THREE.Vector3();
         const standardSign = invert ? -1 : 1;
+        const referenceWorldPosition = new THREE.Vector3();
         let changed = 0;
         for (let index = 0; index < count; index += 1) {
           const splat = this.getPackedSplatAt(item, index);
@@ -4690,11 +4726,12 @@ function startSparkViewer() {
           }
           const snapshot = this.brushStroke.changes.get(index);
           const referenceCenter = mode === "move" && snapshot?.center ? snapshot.center : geometry.center;
-          const distance = referenceCenter.distanceTo(brushCenter);
-          if (distance > radius || !this.isSplatWithinBrushDepth(item, centerViewZ, referenceCenter, depthLimitWorld)) {
+          referenceWorldPosition.copy(referenceCenter).applyMatrix4(item.mesh.matrixWorld);
+          const distanceWorld = referenceWorldPosition.distanceTo(brushCenterWorld);
+          if (distanceWorld > radiusWorld || !this.isSplatWithinBrushDepth(item, centerViewZ, referenceCenter, depthLimitWorld)) {
             continue;
           }
-          const falloff = (1 - (distance / radius)) ** 2;
+          const falloff = (1 - (distanceWorld / radiusWorld)) ** 2;
           if (!snapshot) {
             this.brushStroke.changes.set(index, {
               center: geometry.center.clone(),
@@ -4706,11 +4743,12 @@ function startSparkViewer() {
             ? initialSnapshot.center.clone()
             : geometry.center.clone();
           const nextScales = geometry.scales.clone();
-          const splatScale = this.getSplatAverageScale(geometry);
+          const splatScaleWorld = this.getSplatAverageScaleWorld(item, geometry);
           if (mode === "move") {
             nextCenter.addScaledVector(moveVector, falloff);
           } else if (Math.abs(strength) >= 1e-8) {
-            const displacementBasis = this.state.brushRelativeToSplatSize ? splatScale : radius * 0.08;
+            const displacementBasisWorld = this.state.brushRelativeToSplatSize ? splatScaleWorld : radiusWorld * 0.08;
+            const displacementBasis = this.worldDistanceToLocalDistance(item, displacementBasisWorld);
             nextCenter.addScaledVector(standardDirection, standardSign * strength * falloff * displacementBasis);
           }
           if (editsScale) {

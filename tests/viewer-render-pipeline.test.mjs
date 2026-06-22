@@ -66,6 +66,10 @@ test('brush editing exposes relative controls, z-depth limiting, and viewport ov
   assert.match(source, /new THREE\.Points\(/);
   assert.match(source, /vertexColors:\s*true/);
   assert.match(source, /getStandardBrushDirection\(item\)/);
+  assert.match(source, /getBrushRadiusWorld\(item\)/);
+  assert.match(source, /getBrushInfluenceFalloffWorld\([\s\S]*item,[\s\S]*centerWorld,[\s\S]*radiusWorld,[\s\S]*geometry\.center/);
+  assert.match(source, /const distanceWorld = referenceWorldPosition\.distanceTo\(brushCenterWorld\);/);
+  assert.match(source, /const displacementBasisWorld = this\.state\.brushRelativeToSplatSize \? splatScaleWorld : radiusWorld \* 0\.08;/);
   assert.match(source, /nextCenter\.addScaledVector\(standardDirection, standardSign \* strength \* falloff \* displacementBasis\)/);
   assert.match(source, /const referenceCenter = mode === "move" && snapshot\?\.center \? snapshot\.center : geometry\.center;/);
   assert.match(source, /const scaleWeight = falloff \* Math\.min\(Math\.abs\(strength\), 1\);/);
