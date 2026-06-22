@@ -142,18 +142,15 @@ const evaluateExplosionPresetSample = ({
   }).gsplat;
 };
 
-test('built-in presets include explosion and reveal scripts', () => {
-  assert.deepEqual(Object.keys(ANIMATION_PRESET_LIBRARY), ['explosion', 'reveal']);
+test('built-in presets include only the explosion script', () => {
+  assert.deepEqual(Object.keys(ANIMATION_PRESET_LIBRARY), ['explosion']);
 
   const explosion = parseAnimationScript(getAnimationPresetScriptText('explosion'));
-  const reveal = parseAnimationScript(getAnimationPresetScriptText('reveal'));
 
   assert.equal(explosion.name, DEFAULT_ANIMATION_SCRIPT_NAME);
   assert.equal(explosion.preset, 'explosion');
   assert.equal(explosion.originMode, 'centroid');
-  assert.equal(reveal.preset, 'reveal');
-  assert.equal(reveal.originMode, 'centroid');
-  assert.equal(typeof reveal.createModifier, 'function');
+  assert.equal(typeof explosion.createModifier, 'function');
 });
 
 test('explosion preset keeps a visible opacity floor for uniform primitive shells', () => {
@@ -191,10 +188,14 @@ test('explosion preset keeps primitive sphere shell splats visibly clustered thr
   });
 });
 
-test('legacy diffusion scripts are rejected instead of being silently remapped', () => {
+test('removed animation presets are rejected instead of being silently remapped', () => {
   assert.throws(
     () => parseAnimationScript(JSON.stringify({ preset: 'diffusion', duration: 6, loop: true, params: {} })),
     /Unknown animation preset: diffusion/,
+  );
+  assert.throws(
+    () => parseAnimationScript(JSON.stringify({ preset: 'reveal', duration: 3.6, loop: true, params: {} })),
+    /Unknown animation preset: reveal/,
   );
 });
 
@@ -255,7 +256,7 @@ test('createDefaultAnimationPlaybackState keeps animation off when no script is 
 });
 
 test('serializeAnimationScript keeps inline parameter annotations in the source text', () => {
-  const script = parseAnimationScript(getAnimationPresetScriptText('reveal'));
+  const script = parseAnimationScript(getAnimationPresetScriptText('explosion'));
   const serialized = serializeAnimationScript(script);
 
   assert.match(serialized, /distanceScale: How quickly/);

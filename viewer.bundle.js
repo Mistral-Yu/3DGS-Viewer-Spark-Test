@@ -65193,80 +65193,8 @@ void main() {
     });
   },
 })`;
-  var REVEAL_SCRIPT_SOURCE = `({
-  version: 1,
-  name: 'Splat Reveal',
-  preset: 'reveal',
-  duration: 3.6,
-  loop: true,
-  originMode: 'centroid',
-  origin: [0, 0, 0],
-  params: {
-    // distanceScale: How quickly the reveal front advances from the origin.
-    distanceScale: 0.85,
-    // opacityPower: How sharply newly revealed splats fade in.
-    opacityPower: 1.15,
-    // scaleInfluence: How strongly splat size affects reveal timing.
-    scaleInfluence: 0.8,
-    // speed: How fast the reveal wave travels.
-    speed: 1.0,
-    // strength: How much the reveal drifts the remaining splats inward.
-    strength: 1.5,
-    // swirl: How much subtle spiral motion is mixed in.
-    swirl: 0.2,
-  },
-  createModifier: ({ dyno, handles }) => {
-    const {
-      Gsplat,
-      add,
-      clamp,
-      combineGsplat,
-      dynoBlock,
-      dynoConst,
-      length,
-      max = dyno.Max,
-      mul,
-      pow,
-      splitGsplat,
-      sub,
-    } = dyno;
-    const {
-      distanceScale,
-      epsilon,
-      opacityPower,
-      origin,
-      scaleInfluence,
-      speed,
-      strength,
-      time,
-    } = handles;
-    return dynoBlock({ gsplat: Gsplat }, { gsplat: Gsplat }, ({ gsplat }) => {
-      if (!gsplat) {
-        throw new Error('No gsplat input');
-      }
-      const outputs = splitGsplat(gsplat).outputs;
-      const floatZero = dynoConst('float', 0);
-      const floatOne = dynoConst('float', 1);
-      const relative = sub(outputs.center, origin);
-      const distanceFromOrigin = max(length(relative), epsilon);
-      const scaleMagnitude = max(length(outputs.scales), epsilon);
-      const revealEdge = sub(mul(mul(time, speed), add(floatOne, mul(scaleMagnitude, scaleInfluence))), mul(distanceFromOrigin, distanceScale));
-      const reveal = clamp(revealEdge, floatZero, floatOne);
-      const opacity = pow(reveal, opacityPower);
-      const drift = mul(relative, mul(sub(floatOne, reveal), mul(strength, dynoConst('float', 0.12))));
-      return {
-        gsplat: combineGsplat({
-          gsplat,
-          center: sub(outputs.center, drift),
-          opacity: opacity,
-        }),
-      };
-    });
-  },
-})`;
   var PRESET_SCRIPT_LIBRARY = {
-    explosion: EXPLOSION_SCRIPT_SOURCE,
-    reveal: REVEAL_SCRIPT_SOURCE
+    explosion: EXPLOSION_SCRIPT_SOURCE
   };
   var PRESET_DEFAULTS = {
     explosion: {
@@ -65281,20 +65209,6 @@ void main() {
         speed: 0.6,
         strength: 1.2,
         swirl: 0.35
-      }
-    },
-    reveal: {
-      duration: 3.6,
-      loop: true,
-      origin: [0, 0, 0],
-      originMode: "centroid",
-      params: {
-        distanceScale: 0.85,
-        opacityPower: 1.15,
-        scaleInfluence: 0.8,
-        speed: 1,
-        strength: 1.5,
-        swirl: 0.2
       }
     }
   };
@@ -65373,7 +65287,7 @@ ${" ".repeat(spaces)}`);
     const parsed = typeof config === "string" ? parseAnimationScript(config) : normalizeAnimationConfig(config);
     const originSource = indentBlock(JSON.stringify([parsed.origin.x, parsed.origin.y, parsed.origin.z], null, 2));
     const paramsSource = indentBlock(`{
-    // distanceScale: How quickly the burst/reveal path moves from the origin.
+    // distanceScale: How quickly the burst path moves from the origin.
     distanceScale: ${parsed.params.distanceScale},
     // opacityPower: How sharply opacity changes during the animation.
     opacityPower: ${parsed.params.opacityPower},
@@ -65605,6 +65519,8 @@ ${" ".repeat(spaces)}`);
       SplatMesh: SplatMesh2,
       SplatFileType: SplatFileType2,
       dyno: dyno2,
+      setPackedSplatCenter: setPackedSplatCenter2,
+      setPackedSplatScales: setPackedSplatScales2,
       unpackSplat: unpackSplat2
     } = spark_module_exports;
     const DEFAULT_LOOK = new Vector3(0, 0, -1);
@@ -65630,6 +65546,9 @@ ${" ".repeat(spaces)}`);
     const LIGHT_POSITION_LIMITS = { min: -1e5, max: 1e5 };
     const LIGHT_HELPER_COLOR = "#fff1b5";
     const LIGHT_COLOR_COMPONENT_LIMITS = { min: 0, max: 1 };
+    const BRUSH_RADIUS_LIMITS = { min: 0.01, max: 1e3 };
+    const BRUSH_STRENGTH_LIMITS = { min: 0, max: 8 };
+    const BRUSH_SCALE_LIMITS = { min: 0.05, max: 8 };
     const LIGHT_OCCLUDER_LIMIT = 96;
     const TRANSLATE_LIMITS = { min: -1e5, max: 1e5 };
     const FPS_KEYS = /* @__PURE__ */ new Set(["KeyW", "KeyA", "KeyS", "KeyD", "KeyQ", "KeyE", "ShiftLeft", "ShiftRight"]);
@@ -65661,8 +65580,7 @@ ${" ".repeat(spaces)}`);
       spz: "SPZ compressed"
     };
     const ANIMATION_PRESET_LABELS = {
-      explosion: "Splat Explosion",
-      reveal: "Splat Reveal"
+      explosion: "Splat Explosion"
     };
     const ANIMATION_PARAM_LIMITS = {
       distanceScale: { min: 0, max: 6 },
@@ -65789,6 +65707,17 @@ ${" ".repeat(spaces)}`);
       alignSourceSelect: document.getElementById("align-source-select"),
       alignStatus: document.getElementById("align-status"),
       alignTargetSelect: document.getElementById("align-target-select"),
+      brushModeSelect: document.getElementById("brush-mode-select"),
+      brushRadiusInput: document.getElementById("brush-radius-input"),
+      brushRadiusRange: document.getElementById("brush-radius-range"),
+      brushScaleInput: document.getElementById("brush-scale-input"),
+      brushScaleRange: document.getElementById("brush-scale-range"),
+      brushStatus: document.getElementById("brush-status"),
+      brushStrengthInput: document.getElementById("brush-strength-input"),
+      brushStrengthRange: document.getElementById("brush-strength-range"),
+      brushToggleButton: document.getElementById("brush-toggle-button"),
+      brushUndoButton: document.getElementById("brush-undo-button"),
+      brushControlsSection: document.getElementById("brush-controls-section"),
       primitiveSelect: document.getElementById("primitive-select"),
       modeButtons: Array.from(document.querySelectorAll("[data-mode]")),
       modeDescription: document.getElementById("mode-description"),
@@ -66695,6 +66624,10 @@ ${" ".repeat(spaces)}`);
         this.alignPoints = { source: [], target: [] };
         this.alignMarkers = [];
         this.alignPickMode = false;
+        this.brushEnabled = false;
+        this.brushStroke = null;
+        this.lastBrushUndo = null;
+        this.lastBrushPointer = null;
         this.lastAlignmentSnapshot = null;
         this.lightOccluderSamples = [];
         this.runtimeLightOccluders = [];
@@ -66780,6 +66713,10 @@ ${" ".repeat(spaces)}`);
           autoRotate: false,
           autoLodEnabled: false,
           background: "graphite",
+          brushMode: "move",
+          brushRadius: 0.25,
+          brushScale: 1,
+          brushStrength: 0.35,
           depthRange: DEPTH_RANGE_DEFAULT,
           exportFalloff: true,
           exportOpacity: true,
@@ -66860,6 +66797,7 @@ ${" ".repeat(spaces)}`);
         this.syncAnimationEditor();
         this.syncAnimationControls(true);
         this.syncAlignUi();
+        this.syncBrushUi(true);
         if (this.dom.colorspaceChip) {
           this.dom.colorspaceChip.textContent = "Display sRGB";
         }
@@ -66886,6 +66824,12 @@ ${" ".repeat(spaces)}`);
         this.renderer.domElement.addEventListener("dblclick", (event) => this.focusPick(event));
         this.renderer.domElement.addEventListener("contextmenu", (event) => event.preventDefault());
         this.renderer.domElement.addEventListener("pointerdown", (event) => {
+          if (this.brushEnabled && event.button === 0) {
+            event.preventDefault();
+            event.stopPropagation();
+            this.startBrushStroke(event);
+            return;
+          }
           if (this.alignPickMode && event.button === 0) {
             event.preventDefault();
             event.stopPropagation();
@@ -66906,7 +66850,14 @@ ${" ".repeat(spaces)}`);
           }
           this.commitActiveField();
         }, true);
-        this.renderer.domElement.addEventListener("pointermove", (event) => this.queueHoverProbe(event));
+        this.renderer.domElement.addEventListener("pointermove", (event) => {
+          if (this.brushStroke) {
+            this.continueBrushStroke(event);
+          }
+          this.queueHoverProbe(event);
+        });
+        window.addEventListener("pointerup", () => this.endBrushStroke());
+        window.addEventListener("pointercancel", () => this.endBrushStroke());
         this.renderer.domElement.addEventListener("pointerleave", () => this.clearHoverReadout());
         this.renderer.domElement.addEventListener("wheel", (event) => this.handleStageWheel(event), { passive: false });
         this.installRenderActivityListeners();
@@ -67027,6 +66978,30 @@ ${" ".repeat(spaces)}`);
         this.dom.alignClearPointsButton?.addEventListener("click", () => this.clearAlignPoints());
         this.dom.alignApplyButton?.addEventListener("click", () => this.applyAlignment());
         this.dom.alignResetButton?.addEventListener("click", () => this.resetAlignment());
+        this.dom.brushToggleButton?.addEventListener("click", () => this.toggleBrushEditing());
+        this.dom.brushUndoButton?.addEventListener("click", () => this.undoLastBrushStroke());
+        this.dom.brushModeSelect?.addEventListener("change", (event) => {
+          this.state.brushMode = event.target.value === "standard" ? "standard" : "move";
+          this.syncBrushUi(false);
+        });
+        this.bindNumberPair({
+          input: this.dom.brushRadiusInput,
+          range: this.dom.brushRadiusRange,
+          limits: BRUSH_RADIUS_LIMITS,
+          onChange: (value, options) => this.setBrushRadius(value, options)
+        });
+        this.bindNumberPair({
+          input: this.dom.brushStrengthInput,
+          range: this.dom.brushStrengthRange,
+          limits: BRUSH_STRENGTH_LIMITS,
+          onChange: (value, options) => this.setBrushStrength(value, options)
+        });
+        this.bindNumberPair({
+          input: this.dom.brushScaleInput,
+          range: this.dom.brushScaleRange,
+          limits: BRUSH_SCALE_LIMITS,
+          onChange: (value, options) => this.setBrushScale(value, options)
+        });
         this.dom.addPointLightButton?.addEventListener("click", () => {
           this.addPointLight();
         });
@@ -67099,7 +67074,7 @@ ${" ".repeat(spaces)}`);
           limits: TRANSLATE_LIMITS,
           onChange: (value) => this.setAnimationOriginAxis("z", value)
         });
-        this.dom.animationLoadPresetButton?.addEventListener("click", () => this.loadAnimationPreset(this.dom.animationPresetSelect?.value || "reveal"));
+        this.dom.animationLoadPresetButton?.addEventListener("click", () => this.loadAnimationPreset(this.dom.animationPresetSelect?.value || "explosion"));
         this.dom.animationCopyDefaultButton?.addEventListener("click", () => this.clearAnimationScript(true));
         this.dom.animationApplyButton?.addEventListener("click", () => this.applyAnimationScript(true));
         this.dom.animationPlayButton?.addEventListener("click", () => this.playAnimation());
@@ -67740,6 +67715,7 @@ ${" ".repeat(spaces)}`);
         this.syncAlignUi();
         this.syncLightList();
         this.updateTransformGizmoButtons();
+        this.syncBrushUi(true);
         if (this.hoverPointer) {
           this.updateHoverReadout();
         } else {
@@ -69329,6 +69305,296 @@ alpha ${display.alpha.toFixed(display.alpha < 10 ? 2 : 1)}`;
         }
         return packedSplats.getSplat ? packedSplats.getSplat(index) : unpackSplat2(packedSplats.packedArray, index, item.mesh.packedSplats?.splatEncoding);
       }
+      cloneSplatGeometryState(splat) {
+        const center = splat?.center ?? splat?.position;
+        const scales = splat?.scales ?? splat?.scale;
+        if (!center || !scales) {
+          return null;
+        }
+        return {
+          center: new Vector3(
+            Number(center.x ?? center[0] ?? 0) || 0,
+            Number(center.y ?? center[1] ?? 0) || 0,
+            Number(center.z ?? center[2] ?? 0) || 0
+          ),
+          scales: new Vector3(
+            Math.max(Number(scales.x ?? scales[0] ?? 1e-4) || 1e-4, 1e-4),
+            Math.max(Number(scales.y ?? scales[1] ?? 1e-4) || 1e-4, 1e-4),
+            Math.max(Number(scales.z ?? scales[2] ?? 1e-4) || 1e-4, 1e-4)
+          )
+        };
+      }
+      getEditableSplatStorage(item) {
+        return item?.mesh?.splats ?? item?.mesh?.extSplats ?? item?.mesh?.packedSplats ?? null;
+      }
+      writeSplatGeometry(item, index, center, scales, sourceSplat = this.getPackedSplatAt(item, index)) {
+        const splats = this.getEditableSplatStorage(item);
+        if (!item?.mesh || !splats || !sourceSplat || !center || !scales) {
+          return false;
+        }
+        if (splats.getSplat && splats.setSplat) {
+          const colorArray = toLinearRgbArray(sourceSplat.color ?? sourceSplat.rgb ?? sourceSplat.rgba);
+          const color = new Color(colorArray[0], colorArray[1], colorArray[2]);
+          const alpha = Number(sourceSplat.opacity ?? sourceSplat.alpha ?? sourceSplat.rgba?.w ?? sourceSplat.rgba?.a ?? 1) || 0;
+          splats.setSplat(index, center, scales, this.getSplatQuaternion(sourceSplat), alpha, color);
+          return true;
+        }
+        const packedSplats = item.mesh.packedSplats;
+        const packedArray = packedSplats?.packedArray;
+        if (packedArray && setPackedSplatCenter2 && setPackedSplatScales2) {
+          setPackedSplatCenter2(packedArray, index, center.x, center.y, center.z);
+          setPackedSplatScales2(packedArray, index, scales.x, scales.y, scales.z, packedSplats.splatEncoding);
+          return true;
+        }
+        return false;
+      }
+      setBrushRadius(value, { commit = true, syncInput = true } = {}) {
+        this.state.brushRadius = commit ? clampNumber(value, BRUSH_RADIUS_LIMITS) : Number(value);
+        this.syncBrushUi(syncInput);
+      }
+      setBrushStrength(value, { commit = true, syncInput = true } = {}) {
+        this.state.brushStrength = commit ? clampNumber(value, BRUSH_STRENGTH_LIMITS) : Number(value);
+        this.syncBrushUi(syncInput);
+      }
+      setBrushScale(value, { commit = true, syncInput = true } = {}) {
+        this.state.brushScale = commit ? clampNumber(value, BRUSH_SCALE_LIMITS) : Number(value);
+        this.syncBrushUi(syncInput);
+      }
+      syncBrushUi(syncInput = true) {
+        const item = this.getSelectedItem();
+        const editable = Boolean(item?.mesh && this.getEditableSplatStorage(item));
+        if (!editable) {
+          this.brushEnabled = false;
+          this.brushStroke = null;
+        }
+        if (this.dom.brushModeSelect) {
+          this.dom.brushModeSelect.value = this.state.brushMode;
+        }
+        if (this.dom.brushRadiusRange) {
+          this.dom.brushRadiusRange.value = String(Math.min(clampNumber(this.state.brushRadius, BRUSH_RADIUS_LIMITS), 5));
+        }
+        if (syncInput && this.dom.brushRadiusInput) {
+          this.dom.brushRadiusInput.value = formatNumber(this.state.brushRadius, this.state.brushRadius < 1 ? 2 : 1);
+        }
+        if (this.dom.brushStrengthRange) {
+          this.dom.brushStrengthRange.value = String(Math.min(clampNumber(this.state.brushStrength, BRUSH_STRENGTH_LIMITS), 2));
+        }
+        if (syncInput && this.dom.brushStrengthInput) {
+          this.dom.brushStrengthInput.value = formatNumber(this.state.brushStrength, 2);
+        }
+        if (this.dom.brushScaleRange) {
+          this.dom.brushScaleRange.value = String(Math.min(clampNumber(this.state.brushScale, BRUSH_SCALE_LIMITS), 2));
+        }
+        if (syncInput && this.dom.brushScaleInput) {
+          this.dom.brushScaleInput.value = formatNumber(this.state.brushScale, 2);
+        }
+        if (this.dom.brushToggleButton) {
+          this.dom.brushToggleButton.disabled = !editable;
+          this.dom.brushToggleButton.classList.toggle("is-active", this.brushEnabled);
+          this.dom.brushToggleButton.textContent = this.brushEnabled ? "Brush On" : "Brush Off";
+        }
+        if (this.dom.brushUndoButton) {
+          this.dom.brushUndoButton.disabled = !this.lastBrushUndo?.changes?.length;
+        }
+        this.setSectionDisabled(this.dom.brushControlsSection, !editable, [this.dom.brushToggleButton, this.dom.brushUndoButton]);
+        if (this.dom.brushStatus) {
+          this.dom.brushStatus.textContent = editable ? this.brushEnabled ? `${this.state.brushMode === "standard" ? "Standard" : "Move"} brush active. Left-drag on the selected splat; hold Shift to invert Standard.` : "Brush is off. Enable it, then left-drag in the viewport." : "Select a splat item before brushing.";
+        }
+        this.dom.stage?.classList.toggle("is-brushing", this.brushEnabled);
+      }
+      toggleBrushEditing() {
+        const item = this.getSelectedItem();
+        if (!item?.mesh || !this.getEditableSplatStorage(item)) {
+          this.updateStatus("Select an editable splat item before brushing");
+          this.syncBrushUi(true);
+          return;
+        }
+        this.brushEnabled = !this.brushEnabled;
+        this.brushStroke = null;
+        this.syncBrushUi(false);
+        this.updateStatus(this.brushEnabled ? "Brush editing enabled" : "Brush editing disabled");
+      }
+      getBrushPointer(event) {
+        const rect = this.renderer.domElement.getBoundingClientRect();
+        return {
+          x: (event.clientX - rect.left) / rect.width * 2 - 1,
+          y: -((event.clientY - rect.top) / rect.height * 2 - 1)
+        };
+      }
+      getBrushHit(event) {
+        const pointer = this.getBrushPointer(event);
+        this.hoverPointer = pointer;
+        this.lastHoverPointer = { ...pointer };
+        const liveHit = this.getTopHoverHit(pointer);
+        if (liveHit) {
+          const sample2 = this.resolveColorSampleFromHit(liveHit.sceneItem, liveHit.hit.point);
+          if (sample2) {
+            return { item: liveHit.sceneItem, sample: sample2, worldPoint: liveHit.hit.point.clone() };
+          }
+        }
+        const sample = this.resolveColorSampleFromPointer(pointer);
+        const item = sample ? this.getSceneItemById(sample.itemId) : null;
+        return item && sample ? { item, sample, worldPoint: this.getSampleWorldPosition(item, sample) } : null;
+      }
+      startBrushStroke(event) {
+        const hit = this.getBrushHit(event);
+        if (!hit?.item || !hit.sample) {
+          this.updateStatus("Brush missed the visible splat");
+          return;
+        }
+        if (hit.item.id !== this.selectedSceneItemId) {
+          this.selectSceneItem(hit.item.id, false);
+        }
+        this.brushStroke = {
+          changes: /* @__PURE__ */ new Map(),
+          itemId: hit.item.id,
+          lastClientX: event.clientX,
+          lastClientY: event.clientY,
+          touched: 0
+        };
+        this.applyBrushAtHit(hit, { dx: 0, dy: 0, invert: event.shiftKey });
+        this.renderer.domElement.setPointerCapture?.(event.pointerId);
+      }
+      continueBrushStroke(event) {
+        if (!this.brushStroke) {
+          return;
+        }
+        const hit = this.getBrushHit(event);
+        if (!hit?.item || hit.item.id !== this.brushStroke.itemId) {
+          return;
+        }
+        const dx = event.clientX - this.brushStroke.lastClientX;
+        const dy = event.clientY - this.brushStroke.lastClientY;
+        this.brushStroke.lastClientX = event.clientX;
+        this.brushStroke.lastClientY = event.clientY;
+        this.applyBrushAtHit(hit, { dx, dy, invert: event.shiftKey });
+      }
+      endBrushStroke() {
+        if (!this.brushStroke) {
+          return;
+        }
+        const item = this.getSceneItemById(this.brushStroke.itemId);
+        const changes = [...this.brushStroke.changes.entries()].map(([index, snapshot]) => ({ index, ...snapshot }));
+        this.lastBrushUndo = item && changes.length ? { itemId: item.id, changes } : null;
+        const touched = this.brushStroke.touched;
+        this.brushStroke = null;
+        this.syncBrushUi(false);
+        if (item && touched) {
+          this.updateStatus(`Brush stroke edited ${touched.toLocaleString()} splats in ${item.modelMeta.name}`);
+        }
+      }
+      getBrushMoveVector(item, dx, dy) {
+        const radius = clampNumber(this.state.brushRadius, BRUSH_RADIUS_LIMITS);
+        const strength = clampNumber(this.state.brushStrength, BRUSH_STRENGTH_LIMITS);
+        const cameraRight = new Vector3(1, 0, 0).applyQuaternion(this.camera.quaternion).normalize();
+        const cameraUp = new Vector3(0, 1, 0).applyQuaternion(this.camera.quaternion).normalize();
+        const worldDelta = cameraRight.multiplyScalar(dx).add(cameraUp.multiplyScalar(-dy));
+        if (worldDelta.lengthSq() < 1e-12) {
+          return new Vector3();
+        }
+        worldDelta.multiplyScalar(radius * strength / 90);
+        const inverseDirectionMatrix = item.mesh.matrixWorld.clone().invert();
+        return worldDelta.transformDirection(inverseDirectionMatrix);
+      }
+      applyBrushAtHit(hit, { dx = 0, dy = 0, invert = false } = {}) {
+        const item = hit.item;
+        const count = this.getPackedSplatCount(item);
+        const radius = clampNumber(this.state.brushRadius, BRUSH_RADIUS_LIMITS);
+        const strength = clampNumber(this.state.brushStrength, BRUSH_STRENGTH_LIMITS);
+        const scaleBias = clampNumber(this.state.brushScale, BRUSH_SCALE_LIMITS);
+        if (!count || radius <= 0 || strength <= 0) {
+          return;
+        }
+        const center = hit.sample.localPosition.clone();
+        const mode = this.state.brushMode === "standard" ? "standard" : "move";
+        const moveVector = mode === "move" ? this.getBrushMoveVector(item, dx, dy) : new Vector3();
+        const standardSign = invert ? -1 : 1;
+        let changed = 0;
+        for (let index = 0; index < count; index += 1) {
+          const splat = this.getPackedSplatAt(item, index);
+          const geometry = this.cloneSplatGeometryState(splat);
+          if (!geometry) {
+            continue;
+          }
+          const distance2 = geometry.center.distanceTo(center);
+          if (distance2 > radius) {
+            continue;
+          }
+          const falloff = (1 - distance2 / radius) ** 2;
+          if (!this.brushStroke.changes.has(index)) {
+            this.brushStroke.changes.set(index, {
+              center: geometry.center.clone(),
+              scales: geometry.scales.clone()
+            });
+          }
+          const nextCenter = geometry.center.clone();
+          const nextScales = geometry.scales.clone();
+          if (mode === "move") {
+            nextCenter.addScaledVector(moveVector, falloff);
+          } else {
+            const direction = geometry.center.clone().sub(center);
+            if (direction.lengthSq() < 1e-10) {
+              this.camera.getWorldDirection(direction).multiplyScalar(-1);
+              direction.transformDirection(item.mesh.matrixWorld.clone().invert());
+            }
+            direction.normalize();
+            nextCenter.addScaledVector(direction, standardSign * radius * strength * falloff * 0.08);
+          }
+          if (Math.abs(scaleBias - 1) > 1e-4) {
+            const scaleFactor = MathUtils.lerp(1, scaleBias, falloff * Math.min(strength, 1));
+            nextScales.multiplyScalar(scaleFactor).clampScalar(1e-4, 1e6);
+          }
+          if (this.writeSplatGeometry(item, index, nextCenter, nextScales, splat)) {
+            changed += 1;
+          }
+        }
+        if (!changed) {
+          return;
+        }
+        this.brushStroke.touched += changed;
+        const storage = this.getEditableSplatStorage(item);
+        this.markSplatStorageNeedsUpdate(storage);
+        item.mesh.updateGenerator?.();
+        item.hoverEntries = this.createMeshHoverEntries(item);
+        const bounds = computeCenterBounds(item.mesh, item.baseLocalBounds ?? item.mesh.getBoundingBox?.(true));
+        item.baseCenterBounds = bounds.clone();
+        item.baseLocalBounds = bounds.clone();
+        this.recomputeBounds();
+        this.renderPickedColors();
+        this.invalidateRender();
+        this.forceVisualRefresh(2);
+        this.queueSparkSceneUpdate();
+      }
+      undoLastBrushStroke() {
+        const undo = this.lastBrushUndo;
+        const item = undo ? this.getSceneItemById(undo.itemId) : null;
+        if (!item?.mesh || !undo?.changes?.length) {
+          this.updateStatus("No brush stroke to undo");
+          this.syncBrushUi(false);
+          return;
+        }
+        let restored = 0;
+        undo.changes.forEach((change) => {
+          const splat = this.getPackedSplatAt(item, change.index);
+          if (this.writeSplatGeometry(item, change.index, change.center, change.scales, splat)) {
+            restored += 1;
+          }
+        });
+        this.markSplatStorageNeedsUpdate(this.getEditableSplatStorage(item));
+        item.mesh.updateGenerator?.();
+        item.hoverEntries = this.createMeshHoverEntries(item);
+        const bounds = computeCenterBounds(item.mesh, item.baseLocalBounds ?? item.mesh.getBoundingBox?.(true));
+        item.baseCenterBounds = bounds.clone();
+        item.baseLocalBounds = bounds.clone();
+        this.recomputeBounds();
+        this.lastBrushUndo = null;
+        this.renderPickedColors();
+        this.invalidateRender();
+        this.forceVisualRefresh(3);
+        this.queueSparkSceneUpdate();
+        this.syncBrushUi(false);
+        this.updateStatus(`Undid brush stroke on ${restored.toLocaleString()} splats`);
+      }
       getSplatQuaternion(splat) {
         const source = splat?.quaternion ?? splat?.rotation ?? splat?.rot;
         if (source) {
@@ -70131,6 +70397,7 @@ alpha ${display.alpha.toFixed(display.alpha < 10 ? 2 : 1)}`;
           this.resetModelMeta();
           this.syncSelectionRefs(null);
           this.applySelectedTransformState(true);
+          this.syncBrushUi(true);
           this.showEmptyState();
           this.setProgress("Idle", 0);
           this.updateRenderChip("Cleared");
@@ -70159,6 +70426,7 @@ alpha ${display.alpha.toFixed(display.alpha < 10 ? 2 : 1)}`;
         this.applySelectedTransformState(true);
         this.syncSelectedSplatControls(true);
         this.syncSelectedLightControls(true);
+        this.syncBrushUi(true);
         this.syncTransformGizmo();
         this.refreshHelpers();
         this.syncLightList();
@@ -70340,6 +70608,7 @@ alpha ${display.alpha.toFixed(display.alpha < 10 ? 2 : 1)}`;
           }
           this.applySelectedTransformState(true);
           this.syncSelectedSplatControls(true);
+          this.syncBrushUi(true);
           this.applyOpacity(false);
           this.applyFalloff(false);
           this.applyExposure(false);
@@ -71238,12 +71507,28 @@ alpha ${display.alpha.toFixed(display.alpha < 10 ? 2 : 1)}`;
           this.dom.animationScriptEditor.value = this.activeAnimationScript ? serializeAnimationScript(this.activeAnimationScript) : "";
         }
         if (this.dom.animationPresetSelect) {
-          this.dom.animationPresetSelect.value = this.activeAnimationScript?.preset || "reveal";
+          this.dom.animationPresetSelect.value = this.activeAnimationScript?.preset || "explosion";
         }
-        if (this.dom.animationScriptStatus) {
-          this.dom.animationScriptStatus.textContent = this.activeAnimationScript ? `${this.activeAnimationScript.name} is loaded. Apply the script to animate the splats.` : "No animation script loaded. Use Splat Reveal, load a script, or keep animation off.";
-        }
+        this.syncAnimationScriptStatus();
         this.syncAnimationOriginControls();
+      }
+      syncAnimationScriptStatus() {
+        if (!this.dom.animationScriptStatus) {
+          return;
+        }
+        if (!this.activeAnimationScript) {
+          this.dom.animationScriptStatus.textContent = "No animation script loaded. Use Splat Explosion, load a script, or keep animation off.";
+          return;
+        }
+        if (this.state.animationApplied && this.state.animationPlaying) {
+          this.dom.animationScriptStatus.textContent = `Playing ${this.activeAnimationScript.name}. Use Pause, Reset, or No Script to stop.`;
+          return;
+        }
+        if (this.state.animationApplied) {
+          this.dom.animationScriptStatus.textContent = `${this.activeAnimationScript.name} is applied. Press Play to animate the splats.`;
+          return;
+        }
+        this.dom.animationScriptStatus.textContent = `${this.activeAnimationScript.name} is loaded. Apply the script to animate the splats.`;
       }
       syncAnimationControls(syncSlider = true) {
         const duration = Math.max(this.state.animationDuration || this.activeAnimationScript?.duration || 0, 0);
@@ -71385,6 +71670,7 @@ alpha ${display.alpha.toFixed(display.alpha < 10 ? 2 : 1)}`;
         this.state.animationTime = nextTime;
         this.animationModifierHandles.time.value = nextTime;
         this.syncAnimationControls(true);
+        this.syncAnimationScriptStatus();
         this.invalidateRender();
         this.forceVisualRefresh(1);
         this.queueSparkSceneUpdate();
@@ -71408,12 +71694,14 @@ alpha ${display.alpha.toFixed(display.alpha < 10 ? 2 : 1)}`;
         this.forceVisualRefresh(2);
         this.queueSparkSceneUpdate();
         this.syncAnimationControls(true);
+        this.syncAnimationScriptStatus();
         this.updateStatus(`Playing ${this.activeAnimationScript.name}`);
       }
       pauseAnimation() {
         this.state.animationPlaying = false;
         this.applyRenderMode(false);
         this.syncAnimationControls(true);
+        this.syncAnimationScriptStatus();
         this.updateStatus(`Paused ${this.activeAnimationScript?.name || "animation"}`);
       }
       resetAnimation() {
@@ -71422,6 +71710,7 @@ alpha ${display.alpha.toFixed(display.alpha < 10 ? 2 : 1)}`;
         this.animationModifierHandles.time.value = 0;
         this.applyRenderMode(false);
         this.syncAnimationControls(true);
+        this.syncAnimationScriptStatus();
         this.forceVisualRefresh(2);
         this.queueSparkSceneUpdate();
         this.updateStatus(`Reset ${this.activeAnimationScript?.name || "animation"}`);
@@ -71438,6 +71727,7 @@ alpha ${display.alpha.toFixed(display.alpha < 10 ? 2 : 1)}`;
         }
         this.applyRenderMode(false);
         this.syncAnimationControls(true);
+        this.syncAnimationScriptStatus();
         this.forceVisualRefresh(commit ? 3 : 1);
         if (this.state.animationApplied) {
           this.queueSparkSceneUpdate();
@@ -71477,11 +71767,14 @@ alpha ${display.alpha.toFixed(display.alpha < 10 ? 2 : 1)}`;
         this.updateStatus(`Saved ${link.download}`);
       }
       setInspectorTab(tab) {
-        const nextTab = ["scene", "color", "light", "animation", "align", "info", "export"].includes(tab) ? tab : "scene";
+        const nextTab = ["scene", "color", "light", "animation", "align", "brush", "info", "export"].includes(tab) ? tab : "scene";
         this.state.inspectorTab = nextTab;
         this.syncInspectorTabs();
         if (nextTab === "align") {
           this.syncAlignUi();
+        }
+        if (nextTab === "brush") {
+          this.syncBrushUi(true);
         }
         const label = nextTab === "scene" ? "Splats" : `${nextTab[0].toUpperCase()}${nextTab.slice(1)}`;
         this.updateRenderChip(`${label} tab`);

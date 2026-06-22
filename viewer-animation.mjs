@@ -111,81 +111,8 @@ const EXPLOSION_SCRIPT_SOURCE = `({
   },
 })`;
 
-const REVEAL_SCRIPT_SOURCE = `({
-  version: 1,
-  name: 'Splat Reveal',
-  preset: 'reveal',
-  duration: 3.6,
-  loop: true,
-  originMode: 'centroid',
-  origin: [0, 0, 0],
-  params: {
-    // distanceScale: How quickly the reveal front advances from the origin.
-    distanceScale: 0.85,
-    // opacityPower: How sharply newly revealed splats fade in.
-    opacityPower: 1.15,
-    // scaleInfluence: How strongly splat size affects reveal timing.
-    scaleInfluence: 0.8,
-    // speed: How fast the reveal wave travels.
-    speed: 1.0,
-    // strength: How much the reveal drifts the remaining splats inward.
-    strength: 1.5,
-    // swirl: How much subtle spiral motion is mixed in.
-    swirl: 0.2,
-  },
-  createModifier: ({ dyno, handles }) => {
-    const {
-      Gsplat,
-      add,
-      clamp,
-      combineGsplat,
-      dynoBlock,
-      dynoConst,
-      length,
-      max = dyno.Max,
-      mul,
-      pow,
-      splitGsplat,
-      sub,
-    } = dyno;
-    const {
-      distanceScale,
-      epsilon,
-      opacityPower,
-      origin,
-      scaleInfluence,
-      speed,
-      strength,
-      time,
-    } = handles;
-    return dynoBlock({ gsplat: Gsplat }, { gsplat: Gsplat }, ({ gsplat }) => {
-      if (!gsplat) {
-        throw new Error('No gsplat input');
-      }
-      const outputs = splitGsplat(gsplat).outputs;
-      const floatZero = dynoConst('float', 0);
-      const floatOne = dynoConst('float', 1);
-      const relative = sub(outputs.center, origin);
-      const distanceFromOrigin = max(length(relative), epsilon);
-      const scaleMagnitude = max(length(outputs.scales), epsilon);
-      const revealEdge = sub(mul(mul(time, speed), add(floatOne, mul(scaleMagnitude, scaleInfluence))), mul(distanceFromOrigin, distanceScale));
-      const reveal = clamp(revealEdge, floatZero, floatOne);
-      const opacity = pow(reveal, opacityPower);
-      const drift = mul(relative, mul(sub(floatOne, reveal), mul(strength, dynoConst('float', 0.12))));
-      return {
-        gsplat: combineGsplat({
-          gsplat,
-          center: sub(outputs.center, drift),
-          opacity: opacity,
-        }),
-      };
-    });
-  },
-})`;
-
 const PRESET_SCRIPT_LIBRARY = {
   explosion: EXPLOSION_SCRIPT_SOURCE,
-  reveal: REVEAL_SCRIPT_SOURCE,
 };
 
 export const ANIMATION_PRESET_LIBRARY = PRESET_SCRIPT_LIBRARY;
@@ -203,20 +130,6 @@ const PRESET_DEFAULTS = {
       speed: 0.6,
       strength: 1.2,
       swirl: 0.35,
-    },
-  },
-  reveal: {
-    duration: 3.6,
-    loop: true,
-    origin: [0, 0, 0],
-    originMode: 'centroid',
-    params: {
-      distanceScale: 0.85,
-      opacityPower: 1.15,
-      scaleInfluence: 0.8,
-      speed: 1,
-      strength: 1.5,
-      swirl: 0.2,
     },
   },
 };
@@ -302,7 +215,7 @@ export function serializeAnimationScript(config) {
   const parsed = typeof config === 'string' ? parseAnimationScript(config) : normalizeAnimationConfig(config);
   const originSource = indentBlock(JSON.stringify([parsed.origin.x, parsed.origin.y, parsed.origin.z], null, 2));
   const paramsSource = indentBlock(`{
-    // distanceScale: How quickly the burst/reveal path moves from the origin.
+    // distanceScale: How quickly the burst path moves from the origin.
     distanceScale: ${parsed.params.distanceScale},
     // opacityPower: How sharply opacity changes during the animation.
     opacityPower: ${parsed.params.opacityPower},

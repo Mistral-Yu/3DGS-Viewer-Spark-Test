@@ -239,6 +239,7 @@
             <button class="segmented-button" type="button" id="tab-light-button" data-inspector-tab="light" role="tab" aria-selected="false" title="Manage point lights that relight visible splats in beauty mode.">Light</button>
             <button class="segmented-button" type="button" id="tab-animation-button" data-inspector-tab="animation" role="tab" aria-selected="false" title="Load, edit, save, and play per-splat animation scripts.">Animation</button>
             <button class="segmented-button" type="button" id="tab-align-button" data-inspector-tab="align" role="tab" aria-selected="false" title="Place matching markers on two splats and rigid-align one to the other.">Align</button>
+            <button class="segmented-button" type="button" id="tab-brush-button" data-inspector-tab="brush" role="tab" aria-selected="false" title="Edit Gaussian splats directly with Move and Standard brushes.">Brush</button>
             <button class="segmented-button" type="button" id="tab-info-button" data-inspector-tab="info" role="tab" aria-selected="false" title="Loaded splat metadata and load progress.">Info</button>
             <button class="segmented-button" type="button" id="tab-export-button" data-inspector-tab="export" role="tab" aria-selected="false" title="Choose which splats to save.">Export</button>
           </div>
@@ -431,6 +432,54 @@
                   <button class="toolbar-button toolbar-button-primary" type="button" id="align-apply-button" title="Move, rotate, and uniformly scale Source so its markers match Target markers.">Apply Alignment</button>
                   <button class="toolbar-button" type="button" id="align-reset-button" title="Restore the Source splat transform from before the last Apply Alignment.">Reset Alignment</button>
                 </div>
+              </div>
+            </section>
+
+            <section class="inspector-panel" id="inspector-brush" data-inspector-panel="brush" role="tabpanel" hidden>
+              <div class="field-stack" id="brush-controls-section">
+                <div class="section-heading section-heading-sub">
+                  <p class="section-label">Sculpt Brush</p>
+                  <div class="section-title-row">
+                    <span
+                      class="hint-badge"
+                      title="Enable Brush, then left-drag over the selected splat. Move follows screen drag; Standard pushes splats outward from the brush center. Edits are written into the selected splat storage and are included in PLY export."
+                      aria-label="Brush editing help"
+                    >?</span>
+                  </div>
+                </div>
+                <p class="progress-label" id="brush-status">Select a splat, enable Brush, then left-drag in the viewport.</p>
+                <div class="button-pair">
+                  <button class="toolbar-button toolbar-button-primary" type="button" id="brush-toggle-button" title="Enable or disable viewport brush editing for the selected splat.">Brush Off</button>
+                  <button class="toolbar-button" type="button" id="brush-undo-button" title="Undo the last brush stroke on the selected splat.">Undo Stroke</button>
+                </div>
+                <label class="field" title="Choose the sculpt operation. Move follows the screen drag direction; Standard inflates or carves along the surface from the brush center.">
+                  <span>Brush Type</span>
+                  <select id="brush-mode-select">
+                    <option value="move" selected>Move</option>
+                    <option value="standard">Standard</option>
+                  </select>
+                </label>
+                <label class="field" title="Brush radius in selected splat local scene units.">
+                  <span>Radius</span>
+                  <div class="field-inline">
+                    <input id="brush-radius-range" type="range" min="0.01" max="5" step="0.01" value="0.25">
+                    <input class="text-input short-input" id="brush-radius-input" type="text" inputmode="decimal" value="0.25">
+                  </div>
+                </label>
+                <label class="field" title="Brush strength. Higher values move or inflate splats more per drag step.">
+                  <span>Strength</span>
+                  <div class="field-inline">
+                    <input id="brush-strength-range" type="range" min="0" max="2" step="0.01" value="0.35">
+                    <input class="text-input short-input" id="brush-strength-input" type="text" inputmode="decimal" value="0.35">
+                  </div>
+                </label>
+                <label class="field" title="Scale affected Gaussian splats while brushing. 1 keeps scale unchanged; above 1 fattens the brush mark; below 1 pinches it.">
+                  <span>Scale Bias</span>
+                  <div class="field-inline">
+                    <input id="brush-scale-range" type="range" min="0.25" max="2" step="0.01" value="1">
+                    <input class="text-input short-input" id="brush-scale-input" type="text" inputmode="decimal" value="1.00">
+                  </div>
+                </label>
               </div>
             </section>
 
@@ -702,8 +751,7 @@
                   <span>Preset</span>
                   <div class="field-inline field-inline-actions">
                     <select id="animation-preset-select">
-                      <option value="explosion">Splat Explosion</option>
-                      <option value="reveal" selected>Splat Reveal</option>
+                      <option value="explosion" selected>Splat Explosion</option>
                     </select>
                     <button class="toolbar-button" type="button" id="animation-load-preset-button" title="Load the selected preset into the script editor.">Load Preset</button>
                   </div>
@@ -747,7 +795,7 @@
                   <span>Script Source</span>
                   <textarea class="script-editor" id="animation-script-editor" spellcheck="false" rows="24"></textarea>
                 </label>
-                <p class="progress-label" id="animation-script-status">No animation script loaded. Use Splat Reveal, load a script, or keep animation off.</p>
+                <p class="progress-label" id="animation-script-status">No animation script loaded. Use Splat Explosion, load a script, or keep animation off.</p>
               </div>
             </section>
 

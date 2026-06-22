@@ -443,7 +443,12 @@ code {
   flex: 0 0 auto;
 }
 
-.viewer-stage.is-picking {
+.viewer-stage.is-picking,
+.viewer-stage.is-brushing {
+  cursor: crosshair;
+}
+
+.viewer-stage.is-brushing canvas {
   cursor: crosshair;
 }
 

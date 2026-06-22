@@ -50,6 +50,14 @@ test('exposure and tone-curve edits use deferred low-fps preview while inputs ar
   assert.match(source, /range\?\.addEventListener\("change", \(event\) => onChange\(event\.target\.value, \{[\s\S]*commit:\s*true/);
 });
 
+test('animation script status reflects loaded, applied, and playing states', () => {
+  assert.match(source, /syncAnimationScriptStatus\(\) \{/);
+  assert.match(source, /No animation script loaded\. Use Splat Explosion, load a script, or keep animation off\./);
+  assert.match(source, /is applied\. Press Play to animate the splats\./);
+  assert.match(source, /Playing \$\{this\.activeAnimationScript\.name\}\. Use Pause, Reset, or No Script to stop\./);
+  assert.match(source, /playAnimation\(\)[\s\S]*this\.syncAnimationScriptStatus\(\);[\s\S]*this\.updateStatus\(`Playing/);
+});
+
 test('info panel metadata includes auto-lod and load-mode summaries', () => {
   assert.match(source, /infoAutoLod: document\.getElementById\("info-auto-lod"\)/);
   assert.match(source, /infoLoadMode: document\.getElementById\("info-load-mode"\)/);

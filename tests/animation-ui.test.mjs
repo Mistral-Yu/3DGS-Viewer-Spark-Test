@@ -30,9 +30,8 @@ test('animation tab keeps preset load beside preset and script actions in the pa
   const panel = animationMatch[0];
 
   assert.match(panel, /id="animation-preset-select"[\s\S]*id="animation-load-preset-button"/);
-  assert.match(panel, /value="explosion"/);
-  assert.match(panel, /value="reveal" selected/);
-  assert.doesNotMatch(panel, /value="explosion" selected/);
+  assert.match(panel, /value="explosion" selected/);
+  assert.doesNotMatch(panel, /value="reveal"/);
   assert.match(panel, /id="animation-origin-mode-select"/);
   assert.match(panel, /id="animation-origin-x-input"/);
   assert.match(panel, /id="animation-origin-y-input"/);
@@ -60,10 +59,25 @@ test('inspector tabs stay pinned to a compact multi-row grid', () => {
   assert.ok(tabsMatch, 'inspector tablist should exist');
   assert.match(tabsMatch[0], /id="tab-scene-button"/);
   assert.match(tabsMatch[0], /id="tab-align-button"/);
+  assert.match(tabsMatch[0], /id="tab-brush-button"/);
   assert.match(tabsMatch[0], /id="tab-export-button"/);
-  assert.equal((tabsMatch[0].match(/data-inspector-tab=/g) || []).length, 7);
+  assert.equal((tabsMatch[0].match(/data-inspector-tab=/g) || []).length, 8);
   assert.match(css, /\.inspector-tabs\s*\{[\s\S]*grid-template-columns:\s*repeat\(4, minmax\(0, 1fr\)\)/);
   assert.doesNotMatch(css, /\.inspector-tabs\s*\{[\s\S]*grid-template-columns:\s*repeat\(7, minmax\(0, 1fr\)\)/);
+});
+
+test('brush tab exposes move and standard splat sculpt controls', () => {
+  const brushMatch = html.match(/<section class="inspector-panel" id="inspector-brush"[\s\S]*?<\/section>/);
+  assert.ok(brushMatch, 'brush panel should exist');
+  const panel = brushMatch[0];
+
+  assert.match(panel, /id="brush-toggle-button"/);
+  assert.match(panel, /id="brush-undo-button"/);
+  assert.match(panel, /id="brush-mode-select"[\s\S]*value="move" selected[\s\S]*value="standard"/);
+  assert.match(panel, /id="brush-radius-range"/);
+  assert.match(panel, /id="brush-strength-range"/);
+  assert.match(panel, /id="brush-scale-range"/);
+  assert.match(css, /\.viewer-stage\.is-brushing/);
 });
 
 test('inspector sections rely on the green labels instead of duplicated white h2 headings', () => {
