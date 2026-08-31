@@ -39,7 +39,7 @@ const buildIdentityCurve = () => [{ x: 0, y: 0 }, { x: 1, y: 1 }];
 
 const sameSign = (left, right) => (left === 0 || right === 0 ? left === right : Math.sign(left) === Math.sign(right));
 
-const computeSegmentData = (points) => {
+export const getToneCurveSpline = (points) => {
   const curve = normalizeCurvePoints(points);
   if (curve.length === 2) {
     const slope = (curve[1].y - curve[0].y) / Math.max(curve[1].x - curve[0].x, MIN_POINT_GAP);
@@ -152,7 +152,7 @@ export function getSelectedToneCurvePoint(state, channel = null) {
 }
 
 export function sampleToneCurveChannel(points, value) {
-  const { curve, tangents } = computeSegmentData(points);
+  const { curve, tangents } = getToneCurveSpline(points);
   const x = clamp01(value);
   for (let index = 0; index < curve.length - 1; index += 1) {
     const start = curve[index];
@@ -178,7 +178,7 @@ export function sampleToneCurveChannel(points, value) {
 }
 
 export function buildToneCurveSvgPathData(points) {
-  const { curve, tangents } = computeSegmentData(points);
+  const { curve, tangents } = getToneCurveSpline(points);
   const toSvgX = (value) => (value * 100).toFixed(3);
   const toSvgY = (value) => (100 - (value * 100)).toFixed(3);
   const commands = [`M ${toSvgX(curve[0].x)} ${toSvgY(curve[0].y)}`];
@@ -302,27 +302,13 @@ export function isNeutralToneCurve(state) {
   });
 }
 
-const evaluateToneCurveLinear = (points, value) => {
-  const curve = normalizeCurvePoints(points);
-  const x = clamp01(value);
-  let result = curve[0]?.y ?? 0;
-  for (let index = 0; index < curve.length - 1; index += 1) {
-    const start = curve[index];
-    const end = curve[index + 1];
-    const span = Math.max(end.x - start.x, MIN_POINT_GAP);
-    const segment = Math.min(Math.max(x - start.x, 0), span);
-    result += segment * ((end.y - start.y) / span);
-  }
-  return clamp01(result);
-};
-
 export function applyToneCurveToLinearRgb(linearRgb, state) {
   const normalized = normalizeToneCurveState(state);
   const [r = 0, g = 0, b = 0] = Array.isArray(linearRgb) ? linearRgb : [0, 0, 0];
   const masterCurve = normalized.curves.master;
-  const applyChannel = (value, channel) => evaluateToneCurveLinear(
+  const applyChannel = (value, channel) => sampleToneCurveChannel(
     normalized.curves[channel],
-    evaluateToneCurveLinear(masterCurve, value),
+    sampleToneCurveChannel(masterCurve, value),
   );
   return [
     applyChannel(r, 'red'),

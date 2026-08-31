@@ -101,7 +101,7 @@ test('applyToneCurveToLinearRgb uses master plus per-channel point curves in lin
 
   const curved = applyToneCurveToLinearRgb([0.5, 0.5, 0.5], state);
 
-  assert.deepEqual(curved.map((value) => Number(value.toFixed(6))), [0.25, 0.1, 0.3]);
+  assert.deepEqual(curved.map((value) => Number(value.toFixed(6))), [0.25, 0.1, 0.402564]);
 });
 
 test('channel selection helpers track the active curve editor state', () => {

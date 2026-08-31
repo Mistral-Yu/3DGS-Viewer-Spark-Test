@@ -278,6 +278,32 @@ export function shouldRenderAnimationFrame(state) {
   return Boolean(state?.animationApplied && state?.animationPlaying);
 }
 
+export function advanceAnimationPlayback(state, { delta = 0, start = false } = {}) {
+  const duration = Math.max(Number(state?.animationDuration) || 0, 0);
+  const loop = Boolean(state?.animationLoop);
+  let animationTime = Math.min(Math.max(Number(state?.animationTime) || 0, 0), duration);
+  let animationPlaying = Boolean(state?.animationPlaying);
+
+  if (start) {
+    if (!loop && animationTime >= duration) {
+      animationTime = 0;
+    }
+    animationPlaying = duration > 0;
+  }
+  if (!animationPlaying || duration <= 0) {
+    return { animationPlaying: false, animationTime };
+  }
+
+  const nextTime = animationTime + Math.max(Number(delta) || 0, 0);
+  if (nextTime < duration) {
+    return { animationPlaying: true, animationTime: nextTime };
+  }
+  if (loop) {
+    return { animationPlaying: true, animationTime: nextTime % duration };
+  }
+  return { animationPlaying: false, animationTime: duration };
+}
+
 export function canPlayAnimation({ animationApplied, hasModifier }) {
   return Boolean(animationApplied && hasModifier);
 }

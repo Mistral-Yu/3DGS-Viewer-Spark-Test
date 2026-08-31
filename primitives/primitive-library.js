@@ -374,6 +374,12 @@
           );
           splats.push({
             alpha: 0.9,
+            // Only the cube and Macbeth chart are authored diffuse surfaces
+            // for the experimental static one-bounce bake.  Keep this
+            // provenance beside the procedural source rather than inferring
+            // it from the display RGB after the PLY has been packed.
+            authoredDiffuseAlbedo: [color.r, color.g, color.b],
+            authoredSurfaceArea: (2 / steps) ** 2,
             color,
             normal: normal.clone(),
             position,
@@ -448,6 +454,11 @@
             );
             splats.push({
               alpha,
+              // Two layers share one physical patch subdivision.  Their
+              // explicit linear EXR patch albedo, not rendered RGB, is the
+              // only bounce albedo carried into the renderer-neutral stream.
+              authoredDiffuseAlbedo: patch.linear.slice(),
+              authoredSurfaceArea: ((patchStep / patchSubdivisions) ** 2) / 2,
               color: color.clone(),
               normal: boardNormal.clone(),
               position: subPosition,

@@ -3,7 +3,6 @@ import { OrbitControls } from "./vendor/three/examples/jsm/controls/OrbitControl
 import { TransformControls } from "./vendor/three/examples/jsm/controls/TransformControls.js";
 import * as Spark from "./vendor/spark/spark.module.js";
 import { computeLayoutMode, computePanelWidths, computeShellSize, computeUiScale } from "./viewer-layout.mjs";
-import { buildLodChipLabel, buildLodInfoLabel, buildSplatMeshLoadOptions, detectLodAvailability } from "./viewer-lod.mjs";
 import { computeRigidAlignment, formatAlignPointLabel } from "./viewer-align.mjs";
 import {
   applyToneCurveToLinearRgb,
@@ -11,6 +10,7 @@ import {
   buildToneCurveState,
   findNearestRemovableToneCurvePointIndex,
   getSelectedToneCurvePoint,
+  getToneCurveSpline,
   insertToneCurvePoint,
   isNeutralToneCurve,
   normalizeToneCurveState,
@@ -24,6 +24,7 @@ import {
 import {
   createAnimationModifierFromScript,
   DEFAULT_ANIMATION_SCRIPT_NAME,
+  advanceAnimationPlayback,
   buildAnimationDownloadName,
   canPlayAnimation,
   createDefaultAnimationPlaybackState,
@@ -32,8 +33,38 @@ import {
   serializeAnimationScript,
   shouldRenderAnimationFrame,
 } from "./viewer-animation.mjs";
-import { DEFAULT_LIGHT_COLOR, DEFAULT_LIGHT_HELPER_SCALE, clampLightColor, createDefaultLightState } from "./viewer-lighting.mjs";
+import {
+  applyDirectLighting,
+  applyOneBouncePreview,
+  computeSampledGaussianProxyRadius,
+  DEFAULT_LIGHT_COLOR,
+  DEFAULT_LIGHT_HELPER_SCALE,
+  DIRECT_LIGHT_NORMAL_POLICY,
+  clampLightColor,
+  createDefaultLightState,
+  evaluateSampledLightTransmission,
+  ONE_BOUNCE_VPL_LIMIT,
+  orientDirectLightNormal,
+  selectOneBounceVpls,
+} from "./viewer-lighting.mjs";
 import { applyCubeLutToLinearRgb, parseCubeLut, summarizeCubeLut } from "./viewer-lut.mjs";
+import { createSceneSnapshot, flattenVisibleSnapshot } from "./renderer-contract.mjs";
+import { LookDevBackendManager } from "./viewer-backends.mjs";
+import {
+  getLightOcclusionTextureLayout,
+  LIGHT_OCCLUSION_MAX_LIGHTS,
+  LIGHT_OCCLUSION_MAX_SCALAR_SLOTS,
+} from "./viewer-light-occlusion.mjs";
+import {
+  StaticLightingBakeController,
+  createStaticBakeRestoreHandle,
+} from "./viewer-static-lighting-client.mjs";
+import {
+getStaticBakeActiveShDegree,
+runStaticBakeColorTransaction,
+STATIC_BAKE_MODE,
+STATIC_BAKE_GENERIC_POLICY,
+} from "./viewer-static-lighting.mjs";
 
 function startSparkViewer() {
     const {
@@ -47,6 +78,7 @@ function startSparkViewer() {
     } = Spark;
     const DEFAULT_LOOK = new THREE.Vector3(0, 0, -1);
     const DEFAULT_FIT = new THREE.Vector3(1.05, 0.68, 1.2).normalize();
+    const DEFAULT_FOCAL_LENGTH = 28;
     const DEPTH_RANGE_DEFAULT = 10;
     const FOCAL_LENGTH_LIMITS = { min: 5, max: 400 };
     const FOCAL_LENGTH_COMMON_LIMIT = 135;
@@ -84,9 +116,16 @@ function startSparkViewer() {
       brushStrength: 0.35,
       brushUndoLimit: 8,
     };
-    const LIGHT_OCCLUDER_LIMIT = 96;
+const LIGHT_OCCLUDER_LIMIT = 96;
+const LIGHT_SHADOW_GPU_SLOT_LIMIT = 32;
     const TRANSLATE_LIMITS = { min: -100000, max: 100000 };
     const FPS_KEYS = new Set(["KeyW", "KeyA", "KeyS", "KeyD", "KeyQ", "KeyE", "ShiftLeft", "ShiftRight"]);
+    const isEditableKeyboardTarget = (target) => {
+      if (!(target instanceof Element)) {
+        return false;
+      }
+      return Boolean(target.closest("input, select, textarea, [contenteditable]:not([contenteditable=\"false\"])"));
+    };
     const BACKGROUNDS = {
       dawn: "#efe6d7",
       graphite: "#061019",
@@ -97,10 +136,6 @@ function startSparkViewer() {
       balanced: { label: "Balanced", maxPixelRatio: 1.4, maxStdDev: Math.sqrt(8) },
       fast: { label: "Fast", maxPixelRatio: 1.0, maxStdDev: Math.sqrt(6) },
       sharp: { label: "Sharp", maxPixelRatio: 1.85, maxStdDev: Math.sqrt(9) },
-    };
-    const CAMERA_MODE_TEXT = {
-      orbit: "Orbit mode: left drag rotates, right drag or Shift + left drag pans, wheel zooms, and WASD/QE moves the camera.",
-      fps: "First-person: left drag looks, right drag pans in screen space, wheel moves forward or backward, WASD moves, Q/E moves vertically, Shift boosts speed.",
     };
     const RENDER_MODE_LABELS = {
       beauty: "Beauty",
@@ -128,23 +163,23 @@ function startSparkViewer() {
     const dom = {
       appShell: document.querySelector(".app-shell"),
       backgroundSelect: document.getElementById("background-select"),
+      backendSelect: document.getElementById("backend-select"),
       cameraChip: document.getElementById("camera-chip"),
       clearPickedColorsButton: document.getElementById("clear-picked-colors-button"),
       clearSceneButton: document.getElementById("clear-scene-button"),
       colorspaceChip: document.getElementById("colorspace-chip"),
-      lodAutoCheckbox: document.getElementById("lod-auto-checkbox"),
       lutApplySelectedButton: document.getElementById("lut-apply-selected-button"),
       lutFileInput: document.getElementById("lut-file-input"),
       lutInputColorSpaceSelect: document.getElementById("lut-input-color-space-select"),
       lutOpenButton: document.getElementById("lut-open-button"),
       lutOutputColorSpaceSelect: document.getElementById("lut-output-color-space-select"),
       lutStatus: document.getElementById("lut-status"),
-      lodChip: document.getElementById("lod-chip"),
       depthRangeField: document.getElementById("depth-range-field"),
       depthRangeInput: document.getElementById("depth-range-input"),
       depthRangeLabel: document.getElementById("normalize-range-label"),
       depthRangeRange: document.getElementById("depth-range-range"),
       dropOverlay: document.getElementById("drop-overlay"),
+      dropOverlayMessage: document.getElementById("drop-overlay-message"),
       emptyState: document.getElementById("empty-state"),
       exposureInput: document.getElementById("exposure-input"),
       exposureRange: document.getElementById("exposure-range"),
@@ -172,6 +207,7 @@ function startSparkViewer() {
       gridChip: document.getElementById("grid-chip"),
       gridScaleInput: document.getElementById("grid-scale-input"),
       gridScaleSelect: document.getElementById("grid-scale-select"),
+      headerOpenFileButton: document.getElementById("header-open-file-button"),
       hoverChip: document.getElementById("hover-chip"),
       hoverChipColor: document.getElementById("hover-chip-color"),
       hoverChipItem: document.getElementById("hover-chip-item"),
@@ -179,15 +215,12 @@ function startSparkViewer() {
       gizmoScaleButton: document.getElementById("gizmo-scale-button"),
       gizmoTranslateButton: document.getElementById("gizmo-translate-button"),
       infoBounds: document.getElementById("info-bounds"),
-      infoAutoLod: document.getElementById("info-auto-lod"),
       infoCenter: document.getElementById("info-center"),
       infoCompression: document.getElementById("info-compression"),
       infoCompressionRatio: document.getElementById("info-compression-ratio"),
       infoEncoding: document.getElementById("info-encoding"),
       infoFormat: document.getElementById("info-format"),
-      infoItemName: document.getElementById("info-item-name"),
       infoLoadTime: document.getElementById("info-load-time"),
-      infoLoadMode: document.getElementById("info-load-mode"),
       infoName: document.getElementById("info-name"),
       infoPackedCapacity: document.getElementById("info-packed-capacity"),
       infoScaleRange: document.getElementById("info-scale-range"),
@@ -205,6 +238,18 @@ function startSparkViewer() {
       lightIntensityRange: document.getElementById("light-intensity-range"),
       lightList: document.getElementById("light-list"),
       lightName: document.getElementById("light-name"),
+      lightOcclusionCheckbox: document.getElementById("light-occlusion-checkbox"),
+      lightOcclusionUpdateButton: document.getElementById("light-occlusion-update-button"),
+      lightOcclusionCancelButton: document.getElementById("light-occlusion-cancel-button"),
+      lightOcclusionStatus: document.getElementById("light-occlusion-status"),
+      legacySampledShadowCheckbox: document.getElementById("legacy-sampled-shadow-checkbox"),
+      oneBouncePreviewCheckbox: document.getElementById("one-bounce-preview-checkbox"),
+      staticBakeButton: document.getElementById("static-bake-button"),
+      staticBakeCancelButton: document.getElementById("static-bake-cancel-button"),
+      staticBakeClearButton: document.getElementById("static-bake-clear-button"),
+      staticBakeGenericPolicy: document.getElementById("static-bake-generic-policy"),
+      staticBakeMode: document.getElementById("static-bake-mode"),
+      staticBakeStatus: document.getElementById("static-bake-status"),
       lightRInput: document.getElementById("light-r-input"),
       lightGInput: document.getElementById("light-g-input"),
       lightBInput: document.getElementById("light-b-input"),
@@ -233,6 +278,9 @@ function startSparkViewer() {
       animationScriptStatus: document.getElementById("animation-script-status"),
       animationTimeLabel: document.getElementById("animation-time-label"),
       animationTimeRange: document.getElementById("animation-time-range"),
+      timelineContent: document.getElementById("timeline-content"),
+      timelineContext: document.querySelector(".timeline-empty-note"),
+      timelineToggleButton: document.getElementById("timeline-toggle-button"),
       alignAddPointButton: document.getElementById("align-add-point-button"),
       alignApplyButton: document.getElementById("align-apply-button"),
       alignClearPointsButton: document.getElementById("align-clear-points-button"),
@@ -261,10 +309,8 @@ function startSparkViewer() {
       brushControlsSection: document.getElementById("brush-controls-section"),
       primitiveSelect: document.getElementById("primitive-select"),
       modeButtons: Array.from(document.querySelectorAll("[data-mode]")),
-      modeDescription: document.getElementById("mode-description"),
       moveSpeedInput: document.getElementById("move-speed-input"),
       moveSpeedRange: document.getElementById("move-speed-range"),
-      openFileButton: document.getElementById("open-file-button"),
       openFileTriggers: Array.from(document.querySelectorAll("[data-open-file-trigger]")),
       opacityInput: document.getElementById("opacity-input"),
       opacityRange: document.getElementById("opacity-range"),
@@ -292,6 +338,7 @@ function startSparkViewer() {
       sceneTransformSection: document.getElementById("scene-transform-section"),
       inspectorPanels: Array.from(document.querySelectorAll("[data-inspector-panel]")),
       inspectorTabButtons: Array.from(document.querySelectorAll("[data-inspector-tab]")),
+      inspectorScroller: document.querySelector(".inspector-panels"),
       rotationXInput: document.getElementById("rotation-x-input"),
       rotationYInput: document.getElementById("rotation-y-input"),
       rotationZInput: document.getElementById("rotation-z-input"),
@@ -326,8 +373,10 @@ function startSparkViewer() {
       dynoVec3,
       floor,
       fract,
+      greaterThan,
       gsplatNormal,
       length,
+      lessThan,
       max = dyno.Max,
       min = dyno.Min,
       mix,
@@ -336,6 +385,7 @@ function startSparkViewer() {
       pow,
       sign,
       sin,
+      select,
       split,
       splitGsplat,
       step,
@@ -540,13 +590,51 @@ function startSparkViewer() {
         return { gsplat: combineGsplat({ gsplat, r, g, b }) };
       });
 
+    const createLightOcclusionTexture = (data = new Float32Array([1]), width = 1, height = 1) => {
+      const texture = new THREE.DataTexture(data, width, height, THREE.RedFormat, THREE.FloatType);
+      texture.colorSpace = THREE.NoColorSpace;
+      texture.minFilter = THREE.NearestFilter;
+      texture.magFilter = THREE.NearestFilter;
+      texture.generateMipmaps = false;
+      texture.flipY = false;
+      texture.needsUpdate = true;
+      return texture;
+    };
+
+    const readLightOcclusion = (index, handles, lightIndex, lightCount) => new dyno.Dyno({
+      inTypes: { index: "int", enabled: "bool", count: "int", width: "int", texture: "sampler2D" },
+      outTypes: { transmission: "float" },
+      inputs: { index, enabled: handles.enabled, count: handles.count, width: handles.width, texture: handles.sampler },
+      statements: ({ inputs, outputs }) => [
+        `${outputs.transmission} = 1.0;`,
+        `if (${inputs.enabled} && ${inputs.index} >= 0 && ${inputs.index} < ${inputs.count}) {`,
+        `  int occlusionSlot = ${inputs.index} * ${lightCount} + ${lightIndex};`,
+        `  ivec2 occlusionUv = ivec2(occlusionSlot % ${inputs.width}, occlusionSlot / ${inputs.width});`,
+        `  ${outputs.transmission} = texelFetch(${inputs.texture}, occlusionUv, 0).r;`,
+        "}",
+      ],
+    }).outputs.transmission;
+
     const createPointLightColorModifier = ({
+      cameraPosition,
+      faceForwardToCamera,
       lightColorB,
       lightColorG,
       lightColorR,
       lightIntensities,
+      lightOccluderCount,
+      lightOcclusionHandles,
       lightPositions,
       lightCount,
+      occluderOpacities,
+      occluderPositions,
+      occluderRadii,
+      oneBounceFluxB,
+      oneBounceFluxG,
+      oneBounceFluxR,
+      oneBounceNormals,
+      oneBouncePositions,
+      oneBounceRadii,
     }) =>
       dynoBlock({ gsplat: Gsplat }, { gsplat: Gsplat }, ({ gsplat }) => {
         if (!gsplat) {
@@ -557,44 +645,149 @@ function startSparkViewer() {
         const { x: rgbR, y: rgbG, z: rgbB } = split(outputs.rgb).outputs;
         const floatZero = dynoConst("float", 0);
         const floatOne = dynoConst("float", 1);
+        const floatNegativeOne = dynoConst("float", -1);
+        const floatTwo = dynoConst("float", 2);
         const floatEps = dynoConst("float", 0.0001);
+        const shadowEndpointBiasScale = dynoConst("float", 1.5);
+        const shadowEndpointLengthLimit = dynoConst("float", 0.25);
+        const rawNormal = gsplatNormal(gsplat);
+        // Imported orientations use the shortest covariance axis face-forwarded
+        // to the camera. This is intentionally only an approximate normal.
+        const cameraFacingSign = sub(
+          mul(step(floatZero, dot(rawNormal, sub(cameraPosition, center))), floatTwo),
+          floatOne,
+        );
+        const orientedNormal = faceForwardToCamera
+          ? mul(rawNormal, cameraFacingSign)
+          : rawNormal;
+        const normal = div(orientedNormal, max(length(orientedNormal), floatEps));
         let lightBoostR = floatZero;
         let lightBoostG = floatZero;
         let lightBoostB = floatZero;
         for (let lightIndex = 0; lightIndex < lightCount; lightIndex += 1) {
           const lightPosition = lightPositions[lightIndex];
           const lightIntensity = max(lightIntensities[lightIndex], floatZero);
-          const lightVector = sub(center, lightPosition);
-          const lightDistanceSq = max(dot(lightVector, lightVector), floatEps);
-          const lightStrength = div(lightIntensity, lightDistanceSq);
+          const toLight = sub(lightPosition, center);
+          const lightDistanceSq = max(dot(toLight, toLight), floatEps);
+          const lightDirection = div(toLight, max(length(toLight), floatEps));
+          const lightFacing = max(dot(normal, lightDirection), floatZero);
+          let visibility = floatOne;
+          // Active lights are compacted before this modifier is built, so index
+          // zero is the first visible point light. This sampled shadow is an
+          // approximation in native, unspecified scene units.
+          if (lightIndex === 0) {
+            for (let occluderIndex = 0; occluderIndex < lightOccluderCount; occluderIndex += 1) {
+              const occluderPosition = occluderPositions[occluderIndex];
+              const occluderRadius = max(occluderRadii[occluderIndex], floatEps);
+              const occluderOpacity = clamp(occluderOpacities[occluderIndex], floatZero, floatOne);
+              const segmentLength = max(length(toLight), floatEps);
+              const endpointBias = min(
+                mul(occluderRadius, shadowEndpointBiasScale),
+                mul(segmentLength, shadowEndpointLengthLimit),
+              );
+              const biasedLight = sub(lightPosition, mul(lightDirection, endpointBias));
+              const biasedReceiver = add(center, mul(lightDirection, endpointBias));
+              const biasedSegment = sub(biasedReceiver, biasedLight);
+              const biasedSegmentLengthSq = max(dot(biasedSegment, biasedSegment), floatEps);
+              const toOccluder = sub(occluderPosition, biasedLight);
+              const rawSegmentT = div(dot(toOccluder, biasedSegment), biasedSegmentLengthSq);
+              const segmentT = clamp(
+                rawSegmentT,
+                floatZero,
+                floatOne,
+              );
+              const closestPoint = add(biasedLight, mul(biasedSegment, segmentT));
+              const closestDelta = sub(occluderPosition, closestPoint);
+              const softCoverage = mul(
+                clamp(
+                  sub(floatOne, div(dot(closestDelta, closestDelta), mul(occluderRadius, occluderRadius))),
+                  floatZero,
+                  floatOne,
+                ),
+                occluderOpacity,
+              );
+              const coverage = select(
+                greaterThan(rawSegmentT, floatZero),
+                select(lessThan(rawSegmentT, floatOne), softCoverage, floatZero),
+                floatZero,
+              );
+              visibility = mul(visibility, sub(floatOne, coverage));
+            }
+          }
+          if (lightOcclusionHandles) {
+            visibility = mul(visibility, readLightOcclusion(outputs.index, lightOcclusionHandles, lightIndex, lightCount));
+          }
+          const lightStrength = mul(mul(div(lightIntensity, lightDistanceSq), lightFacing), visibility);
           lightBoostR = add(lightBoostR, mul(lightColorR[lightIndex], lightStrength));
           lightBoostG = add(lightBoostG, mul(lightColorG[lightIndex], lightStrength));
           lightBoostB = add(lightBoostB, mul(lightColorB[lightIndex], lightStrength));
         }
+        let oneBounceBoostR = floatZero;
+        let oneBounceBoostG = floatZero;
+        let oneBounceBoostB = floatZero;
+        // Fixed padded VPL handles avoid recompiling the Dyno modifier when
+        // this intentionally leaky one-bounce preview is toggled or re-ranked.
+        for (let vplIndex = 0; vplIndex < ONE_BOUNCE_VPL_LIMIT; vplIndex += 1) {
+          const vplPosition = oneBouncePositions[vplIndex];
+          const vplRadius = max(oneBounceRadii[vplIndex], floatZero);
+          const toVpl = sub(vplPosition, center);
+          const vplDistanceSq = dot(toVpl, toVpl);
+          const vplDirection = div(toVpl, max(length(toVpl), floatEps));
+          const vplNormal = div(
+            oneBounceNormals[vplIndex],
+            max(length(oneBounceNormals[vplIndex]), floatEps),
+          );
+          const receiverFacing = max(dot(normal, vplDirection), floatZero);
+          const emitterFacing = max(dot(vplNormal, mul(vplDirection, floatNegativeOne)), floatZero);
+          const nearDistance = mul(vplRadius, floatTwo);
+          const outsideNearField = select(
+            greaterThan(vplDistanceSq, max(mul(nearDistance, nearDistance), floatEps)),
+            floatOne,
+            floatZero,
+          );
+          const vplStrength = mul(
+            outsideNearField,
+            mul(
+              mul(receiverFacing, emitterFacing),
+              div(floatOne, max(vplDistanceSq, floatEps)),
+            ),
+          );
+          oneBounceBoostR = add(oneBounceBoostR, mul(max(oneBounceFluxR[vplIndex], floatZero), vplStrength));
+          oneBounceBoostG = add(oneBounceBoostG, mul(max(oneBounceFluxG[vplIndex], floatZero), vplStrength));
+          oneBounceBoostB = add(oneBounceBoostB, mul(max(oneBounceFluxB[vplIndex], floatZero), vplStrength));
+        }
         return {
           gsplat: combineGsplat({
             gsplat,
-            r: mul(rgbR, add(floatOne, lightBoostR)),
-            g: mul(rgbG, add(floatOne, lightBoostG)),
-            b: mul(rgbB, add(floatOne, lightBoostB)),
+            r: add(add(rgbR, mul(rgbR, lightBoostR)), mul(rgbR, oneBounceBoostR)),
+            g: add(add(rgbG, mul(rgbG, lightBoostG)), mul(rgbG, oneBounceBoostG)),
+            b: add(add(rgbB, mul(rgbB, lightBoostB)), mul(rgbB, oneBounceBoostB)),
           }),
         };
       });
 
     const evaluateToneCurveExpression = (value, points) => {
-      const curvePoints = normalizeToneCurveState({ curves: { master: points } }).curves.master;
+      const { curve: curvePoints, tangents } = getToneCurveSpline(points);
       const floatZero = dynoConst("float", 0);
       const floatOne = dynoConst("float", 1);
       let result = dynoConst("float", curvePoints[0]?.y ?? 0);
       curvePoints.slice(0, -1).forEach((point, index) => {
         const nextPoint = curvePoints[index + 1];
         const span = Math.max(nextPoint.x - point.x, 0.001);
-        const segment = clamp(
-          sub(value, dynoConst("float", point.x)),
+        const t = clamp(
+          div(sub(value, dynoConst("float", point.x)), dynoConst("float", span)),
           floatZero,
-          dynoConst("float", span),
+          floatOne,
         );
-        result = add(result, mul(segment, dynoConst("float", (nextPoint.y - point.y) / span)));
+        // Sum clamped Hermite segment deltas. Completed segments contribute
+        // y1-y0, later segments zero; only the current segment is interpolated.
+        const m0 = span * tangents[index];
+        const m1 = span * tangents[index + 1];
+        const a = 2 * point.y - 2 * nextPoint.y + m0 + m1;
+        const b = -3 * point.y + 3 * nextPoint.y - 2 * m0 - m1;
+        result = add(result, mul(t, add(dynoConst("float", m0), mul(t, add(
+          dynoConst("float", b), mul(t, dynoConst("float", a)),
+        )))));
       });
       return clamp(result, floatZero, floatOne);
     };
@@ -872,21 +1065,35 @@ function startSparkViewer() {
           formatScaleRange,
         },
       });
-      const hoverEntries = definition.hoverEntries?.map((entry) => ({
-        alpha: entry.alpha,
-        color: entry.color.slice(),
-        label: entry.label || "",
-        position: new THREE.Vector3(...entry.position),
-        scale: new THREE.Vector3(...entry.scale),
-      })) ?? definition.splats.map((splat, index) => ({
+      const hoverEntries = definition.hoverEntries?.map((entry) => {
+        const position = new THREE.Vector3(...entry.position);
+        let splatIndex = 0;
+        let distance = Infinity;
+        definition.splats.forEach((splat, index) => {
+          const nextDistance = position.distanceToSquared(splat.position);
+          if (nextDistance < distance) { distance = nextDistance; splatIndex = index; }
+        });
+        return {
+          alpha: entry.alpha,
+          color: entry.color.slice(),
+          label: entry.label || "",
+          localNormal: definition.splats[splatIndex]?.normal?.clone(),
+          position,
+          scale: new THREE.Vector3(...entry.scale),
+          splatIndex,
+        };
+      }) ?? definition.splats.map((splat, index) => ({
         alpha: splat.alpha,
         color: [splat.color.r, splat.color.g, splat.color.b],
         label: `${definition.name} ${index + 1}`,
+        localNormal: splat.normal?.clone(),
         position: splat.position.clone(),
         scale: splat.scale.clone(),
+        splatIndex: index,
       }));
       return {
         ...definition,
+        authoredSplats: definition.splats,
         bytes: definition.splats.length * 17 * 4,
         buffer: packGaussianPly(definition.splats),
         hoverEntries,
@@ -996,6 +1203,9 @@ function startSparkViewer() {
         this.move = new THREE.Vector3();
         this.lastMovementDelta = new THREE.Vector3();
         this.handleKeyDown = (event) => {
+          if (isEditableKeyboardTarget(event.target)) {
+            return;
+          }
           if (FPS_KEYS.has(event.code)) {
             const sizeBefore = this.keys.size;
             this.keys.add(event.code);
@@ -1005,6 +1215,9 @@ function startSparkViewer() {
           }
         };
         this.handleKeyUp = (event) => {
+          if (isEditableKeyboardTarget(event.target)) {
+            return;
+          }
           if (FPS_KEYS.has(event.code)) {
             const removed = this.keys.delete(event.code);
             if (removed) {
@@ -1237,6 +1450,9 @@ function startSparkViewer() {
         this.firstPerson.setPointerEnabled(false);
         this.firstPerson.setMovementEnabled(true);
         this.firstPerson.onChange = () => this.invalidateRender();
+        this.backendManager = null;
+        this.backendSwitchToken = 0;
+        this.pendingActiveBackendTransformSync = false;
 
         this.raycaster = new THREE.Raycaster();
         this.pointer = new THREE.Vector2();
@@ -1264,6 +1480,7 @@ function startSparkViewer() {
         this.pickedColors = [];
         this.pickedColorSerial = 0;
         this.alignPoints = { source: [], target: [] };
+        this.alignPointContext = null;
         this.alignMarkers = [];
         this.alignPickMode = false;
         this.brushEnabled = false;
@@ -1281,9 +1498,28 @@ function startSparkViewer() {
         this.lastAlignmentSnapshot = null;
         this.lightOccluderSamples = [];
         this.runtimeLightOccluders = [];
+        this.runtimeOneBounceVpls = [];
+        this.staticBakeController = new StaticLightingBakeController();
+        this.lightOcclusionController = new StaticLightingBakeController();
+        this.lightOcclusionEmptyTexture = createLightOcclusionTexture();
+        this.lightOcclusionRevision = 0;
+        this.lightOcclusionTimer = 0;
+        this.lightOcclusionRunning = false;
+        this.lightOcclusionStatusText = "";
+        this.lightOcclusionBlockReason = "";
+        this.staticBakeApplied = false;
+        this.staticBakeApplying = false;
+        this.staticBakeOriginalRgb = null;
+        this.staticBakeRequest = 0;
+        this.staticBakeResultSnapshot = null;
+        this.staticBakeStatusText = "";
+        this.staticBakeStartedAt = 0;
+        this.staticBakeStaleReason = "";
         this.activeLightCount = 0;
         this.activeOccluderCount = 0;
+        this.activeOneBounceVplCount = 0;
         this.lightHandles = {
+          cameraPosition: dynoVec3(new THREE.Vector3(), "viewerLightCameraPosition"),
           colorB: [],
           colorG: [],
           colorR: [],
@@ -1291,6 +1527,30 @@ function startSparkViewer() {
           occluderOpacities: [],
           occluderPositions: [],
           occluderRadii: [],
+          oneBounceFluxB: Array.from(
+            { length: ONE_BOUNCE_VPL_LIMIT },
+            (_, index) => dynoFloat(0, `viewerOneBounceVplFluxB${index}`),
+          ),
+          oneBounceFluxG: Array.from(
+            { length: ONE_BOUNCE_VPL_LIMIT },
+            (_, index) => dynoFloat(0, `viewerOneBounceVplFluxG${index}`),
+          ),
+          oneBounceFluxR: Array.from(
+            { length: ONE_BOUNCE_VPL_LIMIT },
+            (_, index) => dynoFloat(0, `viewerOneBounceVplFluxR${index}`),
+          ),
+          oneBounceNormals: Array.from(
+            { length: ONE_BOUNCE_VPL_LIMIT },
+            (_, index) => dynoVec3(new THREE.Vector3(0, 0, 1), `viewerOneBounceVplNormal${index}`),
+          ),
+          oneBouncePositions: Array.from(
+            { length: ONE_BOUNCE_VPL_LIMIT },
+            (_, index) => dynoVec3(new THREE.Vector3(), `viewerOneBounceVplPosition${index}`),
+          ),
+          oneBounceRadii: Array.from(
+            { length: ONE_BOUNCE_VPL_LIMIT },
+            (_, index) => dynoFloat(0, `viewerOneBounceVplRadius${index}`),
+          ),
           positions: [],
         };
         this.gridHelper = null;
@@ -1304,6 +1564,8 @@ function startSparkViewer() {
         this.hasCapturedInitialPose = false;
         this.activeMode = "orbit";
         this.loadToken = 0;
+        this.sceneLoadEpoch = 0;
+        this.sceneLoadQueue = Promise.resolve();
         this.frameCounter = 0;
         this.lastFpsUpdate = performance.now();
         this.renderInvalidated = true;
@@ -1314,17 +1576,28 @@ function startSparkViewer() {
         this.activeRenderUntil = 0;
         this.deferredPreviewHandle = 0;
         this.interactionFinalizeHandle = 0;
-        this.animationPlaybackHandle = 0;
-        this.lastAnimationTickAt = 0;
         this.sparkSceneDirty = false;
         this.sparkSceneUpdateQueued = false;
         this.sparkSceneUpdatePromise = null;
+        this.pendingAnimationDelta = 0;
         this.pendingPreviewSparkUpdate = false;
         this.postLoadRefreshHandle = 0;
         this.stageResizeObserver = null;
+        this.devicePixelRatioMedia = null;
         this.handleViewportResize = () => {
           this.syncUiScale();
+          this.syncRendererPixelRatio();
           this.onResize();
+        };
+        this.handleDevicePixelRatioChange = () => {
+          this.watchDevicePixelRatio();
+          this.handleViewportResize();
+        };
+        this.preventExternalFileDrop = (event) => {
+          const hasFiles = Array.from(event.dataTransfer?.types || []).includes("Files");
+          if (hasFiles && !this.dom.stage.contains(event.target)) {
+            event.preventDefault();
+          }
         };
         this.idleRenderDelayMs = 160;
         this.depthRangeLimits = { min: 0.1, max: 100 };
@@ -1354,6 +1627,9 @@ function startSparkViewer() {
         };
         this.activeAnimationModifier = null;
         this.activeAnimationScript = null;
+        this.activeAnimationTargetItemId = null;
+        this.animationEditorDirty = false;
+        this.animationEditorDraft = "";
         const defaultAnimationState = createDefaultAnimationPlaybackState(null);
         this.baseObjectModifier = undefined;
         this.baseWorldModifier = undefined;
@@ -1361,7 +1637,6 @@ function startSparkViewer() {
         this.modelMeta = createDefaultModelMeta();
         this.state = {
           autoRotate: false,
-          autoLodEnabled: false,
           background: "graphite",
           ...DEFAULT_BRUSH_SETTINGS,
           depthRange: DEPTH_RANGE_DEFAULT,
@@ -1372,8 +1647,9 @@ function startSparkViewer() {
           loadedLut: null,
           loadedLutName: "",
           toneCurve: buildToneCurveState(),
+          timelineExpanded: false,
           falloff: 1,
-          focalLength: 14,
+          focalLength: DEFAULT_FOCAL_LENGTH,
           gridScaleMode: "auto",
           gridScaleValue: 1,
           inspectorTab: "scene",
@@ -1386,7 +1662,12 @@ function startSparkViewer() {
           lightX: 0,
           lightY: 0,
           lightZ: 0,
+          legacySampledShadow: false,
+          lightOcclusionEnabled: false,
           moveSpeedFactor: 1,
+          oneBouncePreview: false,
+          staticBakeMode: STATIC_BAKE_MODE.DIRECT,
+          staticBakeGenericPolicy: STATIC_BAKE_GENERIC_POLICY.PRESERVE,
           opacity: 1,
           positionRangeScale: 1,
           quality: "balanced",
@@ -1412,8 +1693,15 @@ function startSparkViewer() {
 
       async init() {
         this.dom.stage.append(this.renderer.domElement);
+        this.backendManager = new LookDevBackendManager({
+          stage: this.dom.stage,
+          inputCanvas: this.renderer.domElement,
+          onStatus: (message) => this.updateStatus(message),
+          onTelemetry: (telemetry) => this.syncBackendTelemetry(telemetry),
+        });
         this.syncUiScale();
         this.bindUi();
+        this.syncOpenFileAction();
         if (this.dom.sceneRenderSection && this.dom.sceneTransformSection) {
           this.dom.sceneRenderSection.parentElement?.insertBefore(
             this.dom.sceneTransformSection,
@@ -1434,7 +1722,9 @@ function startSparkViewer() {
         this.applyPositionRange(false);
         this.syncTransformInputs();
         this.syncToggleButtons();
-        this.syncLodUi();
+        this.syncOneBouncePreviewUi();
+        this.syncLegacySampledShadowUi();
+        this.syncStaticBakeUi();
         this.applyRenderMode(false);
         this.updateModeUi();
         this.syncInspectorTabs();
@@ -1444,6 +1734,7 @@ function startSparkViewer() {
         this.syncLightList();
         this.syncAnimationEditor();
         this.syncAnimationControls(true);
+        this.syncTimelineToggle();
         this.syncAlignUi();
         this.createBrushOverlay();
         this.syncBrushUi(true);
@@ -1463,6 +1754,9 @@ function startSparkViewer() {
         this.orbitControls.addEventListener("change", () => this.invalidateRender());
         window.addEventListener("resize", this.handleViewportResize);
         window.visualViewport?.addEventListener("resize", this.handleViewportResize);
+        this.watchDevicePixelRatio();
+        document.addEventListener("dragover", this.preventExternalFileDrop);
+        document.addEventListener("drop", this.preventExternalFileDrop);
         window.addEventListener("pointermove", (event) => this.updateToneCurvePointFromPointer(event));
         window.addEventListener("pointerup", () => this.stopToneCurvePointDrag());
         window.addEventListener("pointercancel", () => this.stopToneCurvePointDrag());
@@ -1512,7 +1806,6 @@ function startSparkViewer() {
         window.addEventListener("pointercancel", () => this.endBrushStroke());
         this.renderer.domElement.addEventListener("pointerleave", () => this.clearHoverReadout());
         this.renderer.domElement.addEventListener("wheel", (event) => this.handleStageWheel(event), { passive: false });
-        this.installRenderActivityListeners();
         this.invalidateRender();
 
         if (this.isFileProtocol) {
@@ -1522,20 +1815,14 @@ function startSparkViewer() {
 
         this.dom.progressLabel.textContent = "Open a local file or drag one into the viewer.";
         this.updateRenderChip("Ready");
-        this.updateStatus("Viewer is ready. Open a local file.");
+        this.updateStatus("Ready");
       }
 
       bindUi() {
+        this.dom.backendSelect?.addEventListener("change", (event) => this.setRendererBackend(event.target.value));
         this.dom.backgroundSelect.addEventListener("change", (event) => {
           this.state.background = event.target.value;
           this.applyBackground();
-        });
-        this.dom.lodAutoCheckbox?.addEventListener("change", () => {
-          this.state.autoLodEnabled = Boolean(this.dom.lodAutoCheckbox.checked);
-          this.syncLodUi();
-          this.updateStatus(this.state.autoLodEnabled
-            ? "Auto LoD enabled for the next splat load"
-            : "Auto LoD disabled; next splat loads will use the legacy path");
         });
 
         this.bindNumberPair({
@@ -1681,6 +1968,34 @@ function startSparkViewer() {
         this.dom.addPointLightButton?.addEventListener("click", () => {
           this.addPointLight();
         });
+        this.dom.lightOcclusionCheckbox?.addEventListener("change", () => {
+          this.setLightOcclusionEnabled(this.dom.lightOcclusionCheckbox.checked);
+        });
+        this.dom.lightOcclusionUpdateButton?.addEventListener("click", () => this.invalidateLightOcclusion("Update requested", { delay: 0 }));
+        this.dom.lightOcclusionCancelButton?.addEventListener("click", () => {
+          this.invalidateLightOcclusion("Canceled; added light is unshadowed", { schedule: false });
+        });
+        this.dom.oneBouncePreviewCheckbox?.addEventListener("change", () => {
+          this.setOneBouncePreview(this.dom.oneBouncePreviewCheckbox.checked);
+        });
+        this.dom.legacySampledShadowCheckbox?.addEventListener("change", () => {
+          this.setLegacySampledShadow(this.dom.legacySampledShadowCheckbox.checked);
+        });
+        this.dom.staticBakeGenericPolicy?.addEventListener("change", () => {
+          this.state.staticBakeGenericPolicy = this.dom.staticBakeGenericPolicy.value;
+          this.syncStaticBakeUi();
+        });
+        this.dom.staticBakeMode?.addEventListener("change", () => {
+          this.state.staticBakeMode = this.dom.staticBakeMode.value;
+          if (this.state.staticBakeMode === STATIC_BAKE_MODE.AUTHORED_ONE_BOUNCE) {
+            this.state.staticBakeGenericPolicy = STATIC_BAKE_GENERIC_POLICY.PRESERVE;
+            this.disableLegacyLightingForAuthoredBounce();
+          }
+          this.syncStaticBakeUi();
+        });
+        this.dom.staticBakeButton?.addEventListener("click", () => this.startStaticBake());
+        this.dom.staticBakeCancelButton?.addEventListener("click", () => this.cancelStaticBake());
+        this.dom.staticBakeClearButton?.addEventListener("click", () => this.clearStaticBake());
         this.bindNumberPair({
           input: this.dom.depthRangeInput,
           range: this.dom.depthRangeRange,
@@ -1689,11 +2004,7 @@ function startSparkViewer() {
         });
 
         this.dom.fileInput.addEventListener("change", async (event) => {
-          const [file] = Array.from(event.target.files || []);
-          if (!file) {
-            return;
-          }
-          await this.loadFromFile(file);
+          await this.loadFromFiles(event.target.files);
           event.target.value = "";
         });
 
@@ -1701,7 +2012,11 @@ function startSparkViewer() {
         this.dom.addPrimitiveButton.addEventListener("click", async () => {
           await this.loadPrimitive(this.dom.primitiveSelect.value || "sphere");
         });
-        this.dom.clearSceneButton.addEventListener("click", () => this.clearLoadedSplat());
+        this.dom.clearSceneButton.addEventListener("click", () => {
+          if (this.confirmClearScene()) {
+            this.clearLoadedSplat();
+          }
+        });
         this.dom.saveSceneSplatsButton?.addEventListener("click", async () => {
           try {
             await this.saveVisibleSceneSplats();
@@ -1726,6 +2041,7 @@ function startSparkViewer() {
         });
         this.dom.inspectorTabButtons.forEach((button) => {
           button.addEventListener("click", () => this.setInspectorTab(button.dataset.inspectorTab || "scene"));
+          button.addEventListener("keydown", (event) => this.handleInspectorTabKeydown(event));
         });
         this.dom.animationLoopCheckbox?.addEventListener("change", () => {
           this.state.animationLoop = Boolean(this.dom.animationLoopCheckbox.checked);
@@ -1755,6 +2071,11 @@ function startSparkViewer() {
         });
         this.dom.animationLoadPresetButton?.addEventListener("click", () => this.loadAnimationPreset(this.dom.animationPresetSelect?.value || "explosion"));
         this.dom.animationCopyDefaultButton?.addEventListener("click", () => this.clearAnimationScript(true));
+        this.dom.animationScriptEditor?.addEventListener("input", () => {
+          this.animationEditorDirty = true;
+          this.animationEditorDraft = this.dom.animationScriptEditor.value;
+          this.syncAnimationScriptStatus();
+        });
         this.dom.animationApplyButton?.addEventListener("click", () => this.applyAnimationScript(true));
         this.dom.animationPlayButton?.addEventListener("click", () => this.playAnimation());
         this.dom.animationPauseButton?.addEventListener("click", () => this.pauseAnimation());
@@ -1771,6 +2092,7 @@ function startSparkViewer() {
         });
         this.dom.animationTimeRange?.addEventListener("input", () => this.setAnimationTimeFromUi(false));
         this.dom.animationTimeRange?.addEventListener("change", () => this.setAnimationTimeFromUi(true));
+        this.dom.timelineToggleButton?.addEventListener("click", () => this.setTimelineExpanded(!this.state.timelineExpanded));
         this.bindNumberPair({
           input: this.dom.sceneLimitInput,
           range: this.dom.sceneLimitRange,
@@ -1812,22 +2134,6 @@ function startSparkViewer() {
           this.setRenderMode(event.target.value);
           this.dom.renderModeSelect.blur();
         });
-        this.dom.renderModeSelect.addEventListener("keydown", (event) => {
-          const blockedKeys = new Set([
-            "ArrowUp",
-            "ArrowDown",
-            "ArrowLeft",
-            "ArrowRight",
-            "Home",
-            "End",
-            "PageUp",
-            "PageDown",
-          ]);
-          const isPrintable = event.key.length === 1 && !event.ctrlKey && !event.metaKey && !event.altKey;
-          if (blockedKeys.has(event.key) || isPrintable) {
-            event.preventDefault();
-          }
-        });
         this.dom.renderModeSelect.addEventListener("wheel", (event) => event.preventDefault(), { passive: false });
 
         this.dom.qualitySelect.addEventListener("change", (event) => {
@@ -1841,6 +2147,7 @@ function startSparkViewer() {
         this.dom.gizmoRotateButton.addEventListener("click", () => this.setTransformGizmoMode("rotate"));
         this.dom.gizmoScaleButton.addEventListener("click", () => this.setTransformGizmoMode("scale"));
         this.dom.shSelect.addEventListener("change", (event) => {
+          this.markStaticBakeStale("SH level changed");
           this.state.shLevel = Number(event.target.value);
           this.applyShLevel();
           this.updateRenderChip("SH level updated");
@@ -1856,13 +2163,17 @@ function startSparkViewer() {
         this.dom.toggleGridButton.addEventListener("click", () => this.toggleHelper("showGrid"));
 
         this.dom.resetRotationButton.addEventListener("click", () => this.resetTransform());
-        [
+        this.bindCommitInputs([
           this.dom.lightRInput,
           this.dom.lightGInput,
           this.dom.lightBInput,
+        ], (commit) => this.applySelectedLightColor(commit));
+        this.bindCommitInputs([
           this.dom.lightXInput,
           this.dom.lightYInput,
           this.dom.lightZInput,
+        ], (commit) => this.applySelectedLightPosition(commit));
+        this.bindCommitInputs([
           this.dom.rotationXInput,
           this.dom.rotationYInput,
           this.dom.rotationZInput,
@@ -1870,46 +2181,7 @@ function startSparkViewer() {
           this.dom.translateXInput,
           this.dom.translateYInput,
           this.dom.translateZInput,
-        ].forEach((input) => {
-          if (!input) {
-            return;
-          }
-          if (
-            input === this.dom.lightXInput
-            || input === this.dom.lightYInput
-            || input === this.dom.lightZInput
-          ) {
-            input.addEventListener("input", () => this.applySelectedLightPosition(false));
-            input.addEventListener("blur", () => this.applySelectedLightPosition(true));
-            input.addEventListener("keydown", (event) => {
-              if (event.key === "Enter") {
-                this.applySelectedLightPosition(true);
-              }
-            });
-            return;
-          }
-          if (
-            input === this.dom.lightRInput
-            || input === this.dom.lightGInput
-            || input === this.dom.lightBInput
-          ) {
-            input.addEventListener("input", () => this.applySelectedLightColor(false));
-            input.addEventListener("blur", () => this.applySelectedLightColor(true));
-            input.addEventListener("keydown", (event) => {
-              if (event.key === "Enter") {
-                this.applySelectedLightColor(true);
-              }
-            });
-            return;
-          }
-          input.addEventListener("input", () => this.applyTransformFromInputs(false, false));
-          input.addEventListener("blur", () => this.applyTransformFromInputs(true, true));
-          input.addEventListener("keydown", (event) => {
-            if (event.key === "Enter") {
-              this.applyTransformFromInputs(true, true);
-            }
-          });
-        });
+        ], (commit) => this.applyTransformFromInputs(commit, commit));
 
         this.dom.stage.addEventListener("dragenter", (event) => this.onDrag(event));
         this.dom.stage.addEventListener("dragover", (event) => this.onDrag(event));
@@ -1924,6 +2196,7 @@ function startSparkViewer() {
             this.startDeferredInteraction();
           } else {
             this.finishDeferredInteraction();
+            this.refreshActiveBackendSnapshot("Gizmo transform committed");
           }
         });
         this.transformControls.addEventListener("change", () => {
@@ -1947,11 +2220,11 @@ function startSparkViewer() {
         const viewportHeight = viewport?.height ?? window.innerHeight;
         const layoutMode = computeLayoutMode({ viewportWidth });
         const shellSize = computeShellSize({ viewportHeight, viewportWidth });
-        const panelWidths = computePanelWidths({ layoutMode, viewportWidth });
         const compensation = computeUiScale({
           viewportHeight,
           viewportWidth,
         });
+        const panelWidths = computePanelWidths({ layoutMode, uiScale: compensation, viewportWidth });
         document.documentElement.style.setProperty("--ui-scale", compensation.toFixed(4));
         document.documentElement.style.setProperty("--shell-width", `${shellSize.width}px`);
         document.documentElement.style.setProperty("--shell-height", `${shellSize.height}px`);
@@ -1960,11 +2233,150 @@ function startSparkViewer() {
         document.body.dataset.layout = layoutMode;
       }
 
-      installRenderActivityListeners() {
-        const mark = () => this.markRenderActivity();
-        ["pointerdown", "pointermove", "keydown", "keyup", "wheel"].forEach((eventName) => {
-          window.addEventListener(eventName, mark, { passive: true });
-        });
+      syncRendererPixelRatio() {
+        const preset = QUALITY[this.state.quality] || QUALITY.balanced;
+        this.renderer.setPixelRatio(Math.min(window.devicePixelRatio || 1, preset.maxPixelRatio));
+      }
+
+      watchDevicePixelRatio() {
+        const previousMedia = this.devicePixelRatioMedia;
+        if (previousMedia) {
+          if (typeof previousMedia.removeEventListener === "function") {
+            previousMedia.removeEventListener("change", this.handleDevicePixelRatioChange);
+          } else {
+            previousMedia.removeListener?.(this.handleDevicePixelRatioChange);
+          }
+        }
+        this.devicePixelRatioMedia = window.matchMedia?.(`(resolution: ${window.devicePixelRatio || 1}dppx)`) || null;
+        if (this.devicePixelRatioMedia) {
+          if (typeof this.devicePixelRatioMedia.addEventListener === "function") {
+            this.devicePixelRatioMedia.addEventListener("change", this.handleDevicePixelRatioChange);
+          } else {
+            this.devicePixelRatioMedia.addListener?.(this.handleDevicePixelRatioChange);
+          }
+        }
+      }
+
+      syncBackendTelemetry({ id }) {
+        if (this.dom.backendSelect && this.dom.backendSelect.value !== id) {
+          this.dom.backendSelect.value = id;
+        }
+      }
+
+      captureRendererSnapshot() {
+        this.syncVisibleSceneItemTransforms();
+        return createSceneSnapshot(this.sceneItems, { visibleOnly: true });
+      }
+
+      refreshActiveBackendSnapshot(reason = "scene updated", { force = false, syncActive = true } = {}) {
+        if (!this.backendManager) {
+          return;
+        }
+        if (!force && this.backendManager.isSparkActive()) return;
+        try {
+          this.backendManager.setSnapshot(this.captureRendererSnapshot(), { syncActive });
+          this.pendingActiveBackendTransformSync = false;
+        } catch (error) {
+          const message = error instanceof Error ? error.message : "Renderer snapshot failed";
+          this.updateStatus(`${reason}: ${message}`);
+          this.updateRenderChip("Backend error");
+        }
+      }
+
+      syncActiveBackendItemTransforms() {
+        if (!this.backendManager || this.backendManager.isSparkActive()) return;
+        this.pendingActiveBackendTransformSync = true;
+        this.invalidateRender();
+      }
+
+      flushActiveBackendItemTransforms() {
+        if (!this.pendingActiveBackendTransformSync || !this.backendManager || this.backendManager.isSparkActive()) return;
+        this.pendingActiveBackendTransformSync = false;
+        this.syncVisibleSceneItemTransforms();
+        this.backendManager.syncItemTransforms(this.sceneItems.map((item) => ({
+          id: item.id,
+          worldMatrix: Array.from(item.mesh.matrixWorld.elements),
+        })));
+      }
+
+      async setRendererBackend(id) {
+        if (!this.backendManager) {
+          return;
+        }
+        const request = ++this.backendSwitchToken;
+        if (this.dom.backendSelect) this.dom.backendSelect.disabled = true;
+        try {
+          const activated = await this.backendManager.setActive(id, {
+            getSnapshot: () => this.captureRendererSnapshot(),
+          });
+          if (request !== this.backendSwitchToken || !activated) return;
+          this.pendingActiveBackendTransformSync = false;
+          if (!this.backendManager.isSparkActive()) this.alignPickMode = false;
+          if (!this.isSparkAnimationAvailable()) {
+            this.pauseAnimation({ announce: false, allowUnsupported: true });
+          }
+          this.syncTransformGizmo();
+          this.updateTransformGizmoButtons();
+          this.syncAlignUi();
+          this.syncBrushUi(false);
+          this.syncAnimationEditor();
+          this.syncAnimationControls(true);
+          this.syncStaticBakeUi();
+          this.forceVisualRefresh(2);
+        } catch (error) {
+          if (request !== this.backendSwitchToken) return;
+          const message = error instanceof Error ? error.message : "Renderer backend failed";
+          this.updateStatus(`${message}; renderer was not changed`);
+          this.updateRenderChip("Backend error");
+          this.syncBackendTelemetry({
+            id: this.backendManager.activeId,
+            label: this.backendManager.activeId,
+            splatCount: this.backendManager.snapshot.splatCount,
+            text: "Active renderer retained after error",
+          });
+        } finally {
+          if (request === this.backendSwitchToken && this.dom.backendSelect) {
+            this.dom.backendSelect.disabled = false;
+            this.dom.backendSelect.value = this.backendManager.activeId;
+          }
+        }
+      }
+
+      renderActiveBackendFrame() {
+        if (!this.backendManager || this.backendManager.isSparkActive()) {
+          return;
+        }
+        this.flushActiveBackendItemTransforms();
+        const width = this.dom.stage.clientWidth;
+        const height = this.dom.stage.clientHeight;
+        if (!width || !height) {
+          return;
+        }
+        try {
+          this.backendManager.renderFrame({
+            camera: this.camera,
+            background: BACKGROUNDS[this.state.background] || BACKGROUNDS.graphite,
+            helpers: {
+              axesLength: Math.max((this.currentGridScale || 1) * 0.5, 0.5),
+              bounds: this.sceneBounds ? {
+                min: this.sceneBounds.min.toArray(),
+                max: this.sceneBounds.max.toArray(),
+              } : null,
+              gridSize: this.currentGridScale || 1,
+              gridStep: this.currentGridStep || 0.1,
+              showAxes: this.state.showAxes,
+              showBounds: this.state.showBounds,
+              showGrid: this.state.showGrid,
+            },
+            width,
+            height,
+            pixelRatio: this.renderer.getPixelRatio(),
+          });
+        } catch (error) {
+          const message = error instanceof Error ? error.message : "Renderer frame failed";
+          this.updateStatus(`${this.backendManager.activeId} renderer error: ${message}`);
+          this.updateRenderChip("Backend error");
+        }
       }
 
       startAnimationLoop() {
@@ -1972,8 +2384,8 @@ function startSparkViewer() {
           return;
         }
         const tick = () => {
-          this.animationLoopHandle = window.requestAnimationFrame(tick);
-          this.renderLoop();
+          this.animationLoopHandle = 0;
+          if (this.renderLoop()) this.animationLoopHandle = window.requestAnimationFrame(tick);
         };
         this.animationLoopHandle = window.requestAnimationFrame(tick);
       }
@@ -2090,11 +2502,16 @@ function startSparkViewer() {
 
       flushRenderNow() {
         this.syncVisibleSceneItemTransforms();
+        this.lightHandles.cameraPosition.value.copy(this.camera.position);
         if (this.brushOverlayGroup?.visible && this.lastBrushHit) {
           this.updateBrushOverlay(this.lastBrushHit, { invalidate: false });
         }
-        this.renderer.setRenderTarget(null);
-        this.renderer.render(this.scene, this.camera);
+        if (this.backendManager?.isSparkActive() ?? true) {
+          this.renderer.setRenderTarget(null);
+          this.renderer.render(this.scene, this.camera);
+        } else {
+          this.renderActiveBackendFrame();
+        }
         this.updateFps();
         this.updateCameraUi();
         this.lastRenderFrameAt = performance.now();
@@ -2133,6 +2550,11 @@ function startSparkViewer() {
           boundsSphere: null,
           centerBounds: null,
           centerBoundsSphere: null,
+          authoredBounceMaterialEntries: null,
+          authoredNormalEntries: null,
+          hasAuthoredSplatNormals: false,
+          geometryRevision: 0,
+          lightOcclusion: null,
           hoverEntries: null,
           modelMeta: createDefaultModelMeta(name, source),
           exportEnabled: true,
@@ -2193,6 +2615,38 @@ function startSparkViewer() {
 
       getSelectedItem() {
         return this.sceneItems.find((item) => item.id === this.selectedSceneItemId) || null;
+      }
+
+      getActiveAnimationTargetItem() {
+        return this.sceneItems.find((item) => item.id === this.activeAnimationTargetItemId) || null;
+      }
+
+      isSparkAnimationAvailable() {
+        return this.backendManager?.isSparkActive() ?? true;
+      }
+
+      isSparkViewportEditingAvailable() {
+        return this.backendManager?.isSparkActive() ?? true;
+      }
+
+      setTimelineExpanded(expanded) {
+        this.state.timelineExpanded = Boolean(expanded);
+        this.syncTimelineToggle();
+      }
+
+      syncTimelineToggle() {
+        const expanded = Boolean(this.state.timelineExpanded);
+        if (this.dom.timelineContent) {
+          this.dom.timelineContent.hidden = !expanded;
+        }
+        if (this.dom.timelineToggleButton) {
+          this.dom.timelineToggleButton.setAttribute("aria-expanded", String(expanded));
+          const action = expanded ? "Hide" : "Show";
+          const visibleAction = !expanded && this.state.animationPlaying ? "Playing · Show" : action;
+          this.dom.timelineToggleButton.innerHTML = `${visibleAction} <span aria-hidden="true">${expanded ? "⌃" : "⌄"}</span>`;
+          this.dom.timelineToggleButton.title = `${action} animation timeline controls.`;
+          this.dom.timelineToggleButton.setAttribute("aria-label", `${this.state.animationPlaying ? "Animation playing. " : ""}${action} animation timeline controls`);
+        }
       }
 
       getSelectedLight() {
@@ -2285,8 +2739,13 @@ function startSparkViewer() {
         }
         this.syncToneCurveUi(syncInputs);
         this.syncLutUi();
-        this.setSectionDisabled(this.dom.sceneRenderSection, !item);
-        this.setSectionDisabled(this.dom.sceneTransformSection, !item);
+        [this.dom.sceneRenderSection, this.dom.sceneTransformSection].forEach((section) => {
+          if (!section) {
+            return;
+          }
+          section.hidden = !item;
+          this.setSectionDisabled(section, false);
+        });
       }
 
       syncSelectedLightControls(syncInputs = true) {
@@ -2351,7 +2810,581 @@ function startSparkViewer() {
             this.dom.lightZInput.value = formatNumber(this.state.lightZ, Math.abs(this.state.lightZ) < 10 ? 2 : 1);
           }
         }
-        this.setSectionDisabled(this.dom.lightControlsSection, !light);
+        if (this.dom.lightControlsSection) {
+          this.dom.lightControlsSection.hidden = !light;
+          this.setSectionDisabled(this.dom.lightControlsSection, false);
+        }
+      }
+
+      syncOneBouncePreviewUi() {
+        if (this.dom.oneBouncePreviewCheckbox) {
+          this.dom.oneBouncePreviewCheckbox.checked = Boolean(this.state.oneBouncePreview);
+        }
+      }
+
+      syncLegacySampledShadowUi() {
+        if (this.dom.legacySampledShadowCheckbox) {
+          this.dom.legacySampledShadowCheckbox.checked = Boolean(this.state.legacySampledShadow);
+        }
+      }
+
+      getLightOcclusionAvailability() {
+        const items = this.sceneItems.filter((item) => item.visible && item.mesh?.visible !== false && item.mesh);
+        const lights = this.sceneLights.filter((light) => light.visible);
+        const splatCount = items.reduce((sum, item) => sum + this.getPackedSplatCount(item), 0);
+        const unavailable = (reason) => ({ enabled: false, reason, items, lights, splatCount });
+        if (!(this.backendManager?.isSparkActive() ?? true)) return unavailable("Switch to Spark for live occlusion");
+        if (this.staticBakeApplied || this.staticBakeApplying) return unavailable("Clear / Restore the static bake to use live occlusion");
+        if (this.state.animationApplied || this.activeAnimationModifier) return unavailable("Clear the animation before computing occlusion");
+        if (!splatCount) return unavailable("Add visible splats");
+        if (!lights.length) return unavailable("Add a visible point light");
+        if (lights.length > LIGHT_OCCLUSION_MAX_LIGHTS) return unavailable(`At most ${LIGHT_OCCLUSION_MAX_LIGHTS} visible lights; no partial shadows`);
+        if (splatCount * lights.length > LIGHT_OCCLUSION_MAX_SCALAR_SLOTS) return unavailable("Occlusion exceeds the 8M splat × light budget; no partial shadows");
+        if (items.some((item) => !item.mesh.forEachSplat || item.mesh.covSplats || item.mesh.paged
+          || item.mesh.skinning || item.mesh.rgbaDisplaceEdits || item.baseObjectModifier || item.baseWorldModifier)) {
+          return unavailable("This splat modifier/storage cannot be captured for occlusion");
+        }
+        try {
+          items.forEach((item) => getLightOcclusionTextureLayout({
+            splatCount: this.getPackedSplatCount(item), lightCount: lights.length,
+            maxTextureSize: this.renderer.capabilities.maxTextureSize,
+          }));
+        } catch (error) {
+          return unavailable(error.message);
+        }
+        return { enabled: true, reason: "Ready", items, lights, splatCount };
+      }
+
+      syncLightOcclusionUi() {
+        const availability = this.getLightOcclusionAvailability();
+        const enabled = this.state.lightOcclusionEnabled;
+        if (this.dom.lightOcclusionCheckbox) this.dom.lightOcclusionCheckbox.checked = enabled;
+        if (this.dom.lightOcclusionUpdateButton) {
+          this.dom.lightOcclusionUpdateButton.disabled = !enabled || !availability.enabled || this.lightOcclusionRunning;
+        }
+        if (this.dom.lightOcclusionCancelButton) {
+          this.dom.lightOcclusionCancelButton.disabled = !this.lightOcclusionRunning && !this.lightOcclusionTimer;
+        }
+        if (this.dom.lightOcclusionStatus) {
+          this.dom.lightOcclusionStatus.textContent = !enabled ? "Off" : !availability.enabled
+            ? availability.reason : this.lightOcclusionStatusText || "Ready to compute";
+        }
+        if (this.dom.legacySampledShadowCheckbox) {
+          this.dom.legacySampledShadowCheckbox.disabled = enabled || this.state.staticBakeMode === STATIC_BAKE_MODE.AUTHORED_ONE_BOUNCE;
+        }
+      }
+
+      syncLightOcclusionEligibility() {
+        const availability = this.getLightOcclusionAvailability();
+        const reason = availability.enabled ? "" : availability.reason;
+        if (reason !== this.lightOcclusionBlockReason) {
+          this.lightOcclusionBlockReason = reason;
+          this.invalidateLightOcclusion(reason || "Conditions updated");
+        } else {
+          this.syncLightOcclusionUi();
+        }
+      }
+
+      setLightOcclusionEnabled(enabled) {
+        this.state.lightOcclusionEnabled = Boolean(enabled);
+        if (enabled && this.state.legacySampledShadow) {
+          this.state.legacySampledShadow = false;
+          this.syncLegacySampledShadowUi();
+          this.refreshLightingModel({ forceModifierRebuild: true, occlusionChanged: false });
+        }
+        this.invalidateLightOcclusion(enabled ? "Occlusion requested" : "Off", { delay: 0 });
+      }
+
+      getLightOcclusionHandles(item) {
+        if (!item.lightOcclusion) {
+          const key = item.id.replace(/[^a-zA-Z0-9]/g, "");
+          item.lightOcclusion = {
+            count: dyno.dynoInt(0, `occlusionCount${key}`),
+            enabled: dyno.dynoBool(false, `occlusionEnabled${key}`),
+            sampler: dyno.dynoSampler2D(this.lightOcclusionEmptyTexture, `occlusionTexture${key}`),
+            width: dyno.dynoInt(1, `occlusionWidth${key}`),
+            texture: null, lightIds: [], data: null,
+          };
+        }
+        return item.lightOcclusion;
+      }
+
+      releaseLightOcclusion(item) {
+        const handles = item.lightOcclusion;
+        if (!handles) return;
+        handles.enabled.value = false;
+        handles.sampler.value = this.lightOcclusionEmptyTexture;
+        handles.count.value = 0;
+        handles.texture?.dispose();
+        handles.texture = null;
+        handles.data = null;
+        handles.lightIds = [];
+      }
+
+      invalidateLightOcclusion(reason, { schedule = true, delay = 450 } = {}) {
+        this.lightOcclusionRevision += 1;
+        this.lightOcclusionController.cancel();
+        this.lightOcclusionRunning = false;
+        window.clearTimeout(this.lightOcclusionTimer);
+        this.lightOcclusionTimer = 0;
+        const hadCache = this.sceneItems.some((item) => item.lightOcclusion?.enabled.value);
+        this.sceneItems.forEach((item) => this.releaseLightOcclusion(item));
+        const availability = this.getLightOcclusionAvailability();
+        this.lightOcclusionBlockReason = availability.enabled ? "" : availability.reason;
+        this.lightOcclusionStatusText = reason;
+        if (this.state.lightOcclusionEnabled && schedule && availability.enabled) {
+          this.lightOcclusionStatusText = "Pending · added light is temporarily unshadowed";
+          this.lightOcclusionTimer = window.setTimeout(() => this.startLightOcclusion(), delay);
+        }
+        this.syncLightOcclusionUi();
+        if (hadCache) {
+          this.renderPickedColors();
+          if (this.hoverPointer) this.updateHoverReadout();
+          this.forceVisualRefresh(2);
+          this.queueSparkSceneUpdate();
+        }
+      }
+
+      async startLightOcclusion() {
+        this.lightOcclusionTimer = 0;
+        const availability = this.getLightOcclusionAvailability();
+        if (!this.state.lightOcclusionEnabled || !availability.enabled || this.lightOcclusionRunning) {
+          this.syncLightOcclusionUi();
+          return;
+        }
+        if (this.brushStroke || this.transformControls.dragging || this.deferredPreviewHandle) {
+          this.lightOcclusionTimer = window.setTimeout(() => this.startLightOcclusion(), 200);
+          return;
+        }
+        const revision = this.lightOcclusionRevision;
+        const startedAt = performance.now();
+        this.lightOcclusionRunning = true;
+        this.lightOcclusionStatusText = "Preparing occlusion…";
+        this.syncLightOcclusionUi();
+        try {
+          const snapshot = this.createStaticBakeSnapshot();
+          if (snapshot.count !== availability.splatCount) throw new Error("Incomplete splat snapshot; no partial shadows applied");
+          const lights = availability.lights.map((light) => {
+            light.root.updateWorldMatrix(true, false);
+            return { id: light.id, position: light.root.getWorldPosition(new THREE.Vector3()).toArray() };
+          });
+          const result = await this.lightOcclusionController.startOcclusion({
+            snapshot, lights,
+            onProgress: ({ phase, processed, total }) => {
+              if (revision !== this.lightOcclusionRevision) return;
+              this.lightOcclusionStatusText = `${phase === "indexing" ? "Indexing" : "Occlusion"} ${processed.toLocaleString()}/${total.toLocaleString()} splats…`;
+              this.syncLightOcclusionUi();
+            },
+          });
+          if (revision !== this.lightOcclusionRevision || !this.state.lightOcclusionEnabled) return;
+          if (result.canceled) {
+            this.lightOcclusionStatusText = "Canceled · added light is unshadowed";
+            return;
+          }
+          this.applyLightOcclusionResult(snapshot, result, lights.map((light) => light.id));
+          this.lightOcclusionStatusText = `Cached · ${snapshot.count.toLocaleString()} splats × ${lights.length} light${lights.length === 1 ? "" : "s"} · ${(performance.now() - startedAt).toFixed(0)} ms`;
+          this.renderPickedColors();
+          if (this.hoverPointer) this.updateHoverReadout();
+          this.forceVisualRefresh(3);
+          this.queueSparkSceneUpdate();
+        } catch (error) {
+          if (revision !== this.lightOcclusionRevision) return;
+          this.sceneItems.forEach((item) => this.releaseLightOcclusion(item));
+          this.lightOcclusionStatusText = `Unavailable · ${error instanceof Error ? error.message : "Occlusion failed"}`;
+        } finally {
+          if (revision === this.lightOcclusionRevision) {
+            this.lightOcclusionRunning = false;
+            this.syncLightOcclusionUi();
+          }
+        }
+      }
+
+      applyLightOcclusionResult(snapshot, result, lightIds) {
+        const lightCount = lightIds.length;
+        const currentLightIds = this.sceneLights.filter((light) => light.visible).map((light) => light.id);
+        if (result.lightCount !== lightCount || result.total !== snapshot.count
+          || result.transmission?.length !== snapshot.count * lightCount
+          || JSON.stringify(result.lightIds) !== JSON.stringify(lightIds)
+          || JSON.stringify(currentLightIds) !== JSON.stringify(lightIds)) {
+          throw new Error("Occlusion light/splat mapping changed; result discarded");
+        }
+        const staged = new Map();
+        try {
+          for (let index = 0; index < snapshot.count; index += 1) {
+            const id = snapshot.itemIds[snapshot.itemIndex[index]];
+            const item = this.getSceneItemById(id);
+            if (!item?.visible || !item.mesh) throw new Error("Occlusion item mapping changed");
+            if (!staged.has(id)) {
+              const count = this.getPackedSplatCount(item);
+              const layout = getLightOcclusionTextureLayout({ splatCount: count, lightCount, maxTextureSize: this.renderer.capabilities.maxTextureSize });
+              staged.set(id, { item, count, layout, data: new Float32Array(layout.width * layout.height), seen: new Uint8Array(count), copied: 0, texture: null });
+            }
+            const entry = staged.get(id);
+            const sourceIndex = snapshot.sourceIndex[index];
+            if (!Number.isInteger(sourceIndex) || sourceIndex < 0 || sourceIndex >= entry.count || entry.seen[sourceIndex]) {
+              throw new Error("Occlusion source index is invalid or duplicated");
+            }
+            entry.seen[sourceIndex] = 1;
+            entry.copied += 1;
+            for (let light = 0; light < lightCount; light += 1) {
+              const transmission = result.transmission[index * lightCount + light];
+              if (!Number.isFinite(transmission) || transmission < 0 || transmission > 1) throw new Error("Invalid occlusion transmission");
+              entry.data[sourceIndex * lightCount + light] = transmission;
+            }
+          }
+          for (const entry of staged.values()) {
+            if (entry.copied !== entry.count) throw new Error("Incomplete occlusion source mapping");
+            entry.texture = createLightOcclusionTexture(entry.data, entry.layout.width, entry.layout.height);
+          }
+          for (const entry of staged.values()) {
+            const handles = this.getLightOcclusionHandles(entry.item);
+            handles.texture?.dispose();
+            handles.texture = entry.texture;
+            handles.sampler.value = entry.texture;
+            handles.data = entry.data;
+            handles.count.value = entry.count;
+            handles.width.value = entry.layout.width;
+            handles.lightIds = lightIds.slice();
+            handles.enabled.value = true;
+          }
+        } catch (error) {
+          staged.forEach((entry) => entry.texture?.dispose());
+          throw error;
+        }
+      }
+
+      setLegacySampledShadow(enabled) {
+        this.state.legacySampledShadow = Boolean(enabled);
+        this.syncLegacySampledShadowUi();
+        this.refreshLightingModel({ forceModifierRebuild: true, occlusionChanged: false });
+        this.updateStatus(this.state.legacySampledShadow
+          ? "Legacy sampled shadow enabled (32 proxies; approximate)"
+          : "Legacy sampled shadow disabled");
+      }
+
+      setOneBouncePreview(enabled) {
+        this.state.oneBouncePreview = Boolean(enabled);
+        this.syncOneBouncePreviewUi();
+        // The VPL Dyno handles are fixed and padded, so this only updates
+        // uniform values and never rebuilds a shader for toggle/count changes.
+        this.syncLightingRuntimeState();
+        if (this.hoverPointer) {
+          this.updateHoverReadout();
+        }
+        this.renderPickedColors();
+        this.invalidateRender();
+        this.queueSparkSceneUpdate();
+        this.updateStatus(this.state.oneBouncePreview
+          ? `Legacy 6-VPL bounce preview enabled (${this.activeOneBounceVplCount}/${ONE_BOUNCE_VPL_LIMIT} authored VPLs; approximate and may leak through occluders)`
+          : "Legacy 6-VPL bounce preview disabled");
+      }
+
+      disableLegacyLightingForAuthoredBounce() {
+        const changed = this.state.legacySampledShadow || this.state.oneBouncePreview;
+        this.state.legacySampledShadow = false;
+        this.state.oneBouncePreview = false;
+        this.syncLegacySampledShadowUi();
+        this.syncOneBouncePreviewUi();
+        if (!changed) return;
+        this.refreshLightingModel({ forceModifierRebuild: true, occlusionChanged: false });
+        this.syncLightingRuntimeState();
+        if (this.hoverPointer) {
+          this.updateHoverReadout();
+        }
+        this.renderPickedColors();
+        this.invalidateRender();
+        this.queueSparkSceneUpdate();
+      }
+
+      getStaticBakeAvailability() {
+        const visibleItems = this.sceneItems.filter((item) => item.visible && item.mesh);
+        const splatCount = visibleItems.reduce(
+          (sum, item) => sum + Number(item.mesh.numSplats ?? item.mesh.packedSplats?.numSplats ?? 0),
+          0,
+        );
+        const visibleLights = this.sceneLights.filter((light) => light.visible);
+        const authoredBounceMaterialCount = visibleItems.reduce((sum, item) => sum + (
+          item.authoredBounceMaterialEntries?.reduce((entrySum, entry) => (
+            entrySum + (entry?.authoredDiffuseAlbedo && Number(entry?.authoredSurfaceArea) > 0 ? 1 : 0)
+          ), 0) ?? 0
+        ), 0);
+        const bounceMode = this.state.staticBakeMode === STATIC_BAKE_MODE.AUTHORED_ONE_BOUNCE;
+        if (this.staticBakeApplying) return { enabled: false, reason: "Bake is running", splatCount };
+        if (this.staticBakeApplied) return { enabled: false, reason: this.staticBakeStaleReason || "Baked; Clear / Restore before a new bake", splatCount };
+        if (!splatCount) return { enabled: false, reason: "No visible splats to bake", splatCount };
+        if (!visibleLights.length) return { enabled: false, reason: "Add one visible point light to bake", splatCount };
+        if (visibleLights.length !== 1) return { enabled: false, reason: "v1 supports exactly one visible point light", splatCount };
+        if (this.state.animationApplied || this.activeAnimationModifier) {
+          return { enabled: false, reason: "Clear the active animation modifier before baking; animation is not captured", splatCount };
+        }
+        if (visibleItems.some((item) => getStaticBakeActiveShDegree({
+          loadedShDegree: item.loadedShDegree,
+          requestedShLevel: item.settings?.shLevel,
+        }) > 0)) {
+          return { enabled: false, reason: "All visible splat items must use SH0; SH>0 is not baked", splatCount };
+        }
+        if (visibleItems.some((item) => {
+          const splats = this.getEditableSplatStorage(item);
+          return !splats?.getSplat || !splats?.setSplat;
+        })) return { enabled: false, reason: "Visible splat storage does not expose public getSplat/setSplat", splatCount };
+        if (bounceMode && !authoredBounceMaterialCount) {
+          return { enabled: false, reason: "Authored one bounce requires visible Cube or Macbeth authored material", splatCount };
+        }
+        if (bounceMode) {
+          return {
+            authoredBounceMaterialCount,
+            enabled: true,
+            reason: "Ready: authored material splats bounce; generic splats are BVH occluders only",
+            splatCount,
+          };
+        }
+        return { enabled: true, reason: "Ready: all visible splats will be receivers and occluders", splatCount };
+      }
+
+      syncStaticBakeUi() {
+        const availability = this.getStaticBakeAvailability();
+        if (this.dom.staticBakeButton) this.dom.staticBakeButton.disabled = !availability.enabled;
+        if (this.dom.staticBakeCancelButton) this.dom.staticBakeCancelButton.disabled = !this.staticBakeApplying;
+        if (this.dom.staticBakeClearButton) this.dom.staticBakeClearButton.disabled = !this.staticBakeApplied;
+        if (this.dom.staticBakeGenericPolicy) {
+          if (this.state.staticBakeMode === STATIC_BAKE_MODE.AUTHORED_ONE_BOUNCE) {
+            this.state.staticBakeGenericPolicy = STATIC_BAKE_GENERIC_POLICY.PRESERVE;
+          }
+          this.dom.staticBakeGenericPolicy.value = this.state.staticBakeGenericPolicy;
+          this.dom.staticBakeGenericPolicy.disabled = this.staticBakeApplying
+            || this.staticBakeApplied
+            || this.state.staticBakeMode === STATIC_BAKE_MODE.AUTHORED_ONE_BOUNCE;
+        }
+        if (this.dom.staticBakeMode) {
+          this.dom.staticBakeMode.value = this.state.staticBakeMode;
+          this.dom.staticBakeMode.disabled = this.staticBakeApplying || this.staticBakeApplied;
+        }
+        const bounceMode = this.state.staticBakeMode === STATIC_BAKE_MODE.AUTHORED_ONE_BOUNCE;
+        if (this.dom.legacySampledShadowCheckbox) this.dom.legacySampledShadowCheckbox.disabled = bounceMode;
+        if (this.dom.oneBouncePreviewCheckbox) this.dom.oneBouncePreviewCheckbox.disabled = bounceMode;
+        if (this.dom.staticBakeStatus && !this.staticBakeApplying) {
+          this.dom.staticBakeStatus.textContent = this.staticBakeStaleReason
+            ? (this.staticBakeApplied
+              ? `Stale: ${this.staticBakeStaleReason}. Clear / Restore before baking again.`
+              : `Stale: ${this.staticBakeStaleReason}. Update conditions, then Bake again.`)
+            : (this.staticBakeStatusText || availability.reason);
+        }
+        this.syncLightOcclusionEligibility();
+      }
+
+      markStaticBakeStale(reason) {
+        if (!this.staticBakeApplied && !this.staticBakeApplying) return;
+        this.staticBakeStaleReason = reason;
+        this.staticBakeStatusText = "";
+        if (this.staticBakeApplying) this.staticBakeController.cancel();
+        this.syncStaticBakeUi();
+      }
+
+      createStaticBakeSnapshot() {
+        this.syncVisibleSceneItemTransforms();
+        return flattenVisibleSnapshot(
+          createSceneSnapshot(this.sceneItems, {
+            includeQuaternion: false,
+            visibleOnly: true,
+          }),
+          { includeQuaternion: false },
+        );
+      }
+
+      getStaticBakeLight() {
+        const light = this.sceneLights.find((entry) => entry.visible);
+        if (!light) return null;
+        light.root.updateMatrixWorld(true);
+        const position = light.root.getWorldPosition(new THREE.Vector3());
+        return {
+          color: [light.color.r, light.color.g, light.color.b],
+          genericPolicy: this.state.staticBakeMode === STATIC_BAKE_MODE.AUTHORED_ONE_BOUNCE
+            ? STATIC_BAKE_GENERIC_POLICY.PRESERVE
+            : this.state.staticBakeGenericPolicy,
+          intensity: light.intensity,
+          position: [position.x, position.y, position.z],
+          shadowFloor: 0,
+        };
+      }
+
+      collectStaticBakeWrites(snapshot, linearRgb) {
+        const records = [];
+        for (let outputIndex = 0; outputIndex < snapshot.count; outputIndex += 1) {
+          const itemId = snapshot.itemIds?.[snapshot.itemIndex[outputIndex]];
+          const item = this.getSceneItemById(itemId);
+          const splats = this.getEditableSplatStorage(item);
+          const sourceIndex = snapshot.sourceIndex[outputIndex];
+          const splat = splats?.getSplat?.(sourceIndex);
+          if (!item || !splats?.setSplat || !splat) {
+            throw new Error("Static bake could not preflight public splat setters; no colors were changed");
+          }
+          // Spark getSplat() reuses one module-level scratch object. Clone every
+          // geometry component immediately or all records collapse to the last
+          // decoded splat when the color transaction starts writing.
+          const sourceCenter = splat.center ?? splat.position;
+          const sourceScales = splat.scales ?? splat.scale;
+          if (!sourceCenter?.clone || !sourceScales?.clone) {
+            throw new Error("Static bake could not clone public splat geometry; no colors were changed");
+          }
+          records.push({
+            center: sourceCenter.clone(),
+            item,
+            opacity: splat.opacity ?? splat.alpha ?? splat.rgba?.w ?? splat.rgba?.a ?? 1,
+            outputIndex,
+            quaternion: this.getSplatQuaternion(splat),
+            scales: sourceScales.clone(),
+            sourceIndex,
+            splats,
+          });
+        }
+        return records;
+      }
+
+      applyStaticBakeColors(snapshot, linearRgb) {
+        const writes = this.collectStaticBakeWrites(snapshot, linearRgb);
+        const touchedItems = new Set();
+        writes.forEach(({ center, item, opacity, outputIndex, quaternion, scales, sourceIndex, splats }) => {
+          const offset = outputIndex * 3;
+          const color = new THREE.Color(linearRgb[offset], linearRgb[offset + 1], linearRgb[offset + 2]);
+          splats.setSplat(
+            sourceIndex,
+            center,
+            scales,
+            quaternion,
+            opacity,
+            color,
+          );
+          touchedItems.add(item);
+        });
+        touchedItems.forEach((item) => {
+          this.markSplatStorageNeedsUpdate(this.getEditableSplatStorage(item));
+          item.mesh.updateGenerator?.();
+          item.hoverEntries = this.createMeshHoverEntries(item);
+        });
+        return writes.length;
+      }
+
+      async startStaticBake() {
+        const availability = this.getStaticBakeAvailability();
+        if (!availability.enabled) {
+          this.updateStatus(`Static bake unavailable: ${availability.reason}`);
+          return;
+        }
+        const snapshot = this.createStaticBakeSnapshot();
+        if (snapshot.unsupportedStaticBakeTransformCount) {
+          this.updateStatus(`Static bake unavailable: ${snapshot.unsupportedStaticBakeTransformCount.toLocaleString()} visible item transform${snapshot.unsupportedStaticBakeTransformCount === 1 ? "" : "s"} uses non-uniform scale, shear, or mirroring`);
+          return;
+        }
+        const light = this.getStaticBakeLight();
+        const request = ++this.staticBakeRequest;
+        this.staticBakeApplying = true;
+        this.staticBakeStaleReason = "";
+        this.staticBakeStatusText = "Preparing immutable world-space snapshot…";
+        this.staticBakeStartedAt = performance.now();
+        this.syncStaticBakeUi();
+        try {
+          const result = await this.staticBakeController.start({
+            light,
+            mode: this.state.staticBakeMode,
+            snapshot,
+            onProgress: ({ phase, processed, stage, total }) => {
+              if (request !== this.staticBakeRequest || !this.staticBakeApplying) return;
+              const stageLabel = {
+                "center-scan": "scan",
+                hierarchy: "hierarchy",
+                morton: "morton",
+                sort: "sort",
+              }[stage] ?? stage;
+              const label = phase === "indexing"
+                ? `Indexing exact packed BVH · ${stageLabel || "scan"}`
+                : (phase === "bounce" ? "Authored one-bounce paths" : "Direct bake");
+              this.staticBakeStatusText = `${label} ${processed.toLocaleString()}/${total.toLocaleString()}${phase === "bounce" ? " paths" : " splats"}…`;
+              if (this.dom.staticBakeStatus) this.dom.staticBakeStatus.textContent = this.staticBakeStatusText;
+            },
+          });
+          if (request !== this.staticBakeRequest) return;
+          if (result.canceled || this.staticBakeStaleReason) {
+            this.updateStatus(result.canceled ? "Static bake canceled; no colors were applied" : "Static bake became stale; no colors were applied");
+            return;
+          }
+          // Keep a recoverable original before the first public setter. If a
+          // later setter/update fails, either rollback atomically or retain
+          // this state so Clear / Restore can be retried without data loss.
+          this.staticBakeOriginalRgb = new Float32Array(snapshot.linearRgb);
+          this.staticBakeResultSnapshot = createStaticBakeRestoreHandle(snapshot);
+          const transaction = runStaticBakeColorTransaction({
+            applyBaked: () => this.applyStaticBakeColors(snapshot, result.bakedLinearRgb),
+            restoreOriginal: () => this.applyStaticBakeColors(snapshot, this.staticBakeOriginalRgb),
+          });
+          if (transaction.error) {
+            if (transaction.rolledBack) {
+              this.staticBakeOriginalRgb = null;
+              this.staticBakeResultSnapshot = null;
+              throw new Error(`Static bake write failed and was rolled back: ${transaction.error.message}`);
+            }
+            this.staticBakeApplied = true;
+            const rollbackMessage = transaction.rollbackError instanceof Error
+              ? transaction.rollbackError.message
+              : "unknown rollback error";
+            throw new Error(`Static bake write failed; Clear / Restore retains the original RGB for retry (${rollbackMessage})`);
+          }
+          const changed = transaction.result;
+          this.staticBakeApplied = true;
+          const elapsed = performance.now() - this.staticBakeStartedAt;
+          const execution = result.execution === "worker" ? "Worker" : "main-thread fallback";
+          const stats = result.diagnostics;
+          const modeLabel = this.state.staticBakeMode === STATIC_BAKE_MODE.AUTHORED_ONE_BOUNCE
+            ? `Direct + authored one bounce · sources: ${stats.selectedSourceCount} coherent source clusters (${stats.sourceClusterGroupCount} groups; experimental approximation), receivers ${stats.authoredBounceReceiverCount}, paths ${stats.testedPaths}/${stats.plannedPaths}, indirect Y ${stats.totalIndirectLuminance.toExponential(3)}`
+            : `All-splat direct · authored ${stats.authoredReceiverCount}, generic visibility-only ${stats.genericVisibilityOnlyCount}`;
+          this.staticBakeStatusText = `Baked ${result.processed.toLocaleString()}/${result.total.toLocaleString()} · ${result.bvhNodeCount.toLocaleString()} BVH nodes · ${elapsed.toFixed(0)} ms · ${execution} · ${modeLabel}`;
+          this.applyRenderMode(false);
+          this.refreshActiveBackendSnapshot("Static bake applied");
+          this.updateStatus(this.state.staticBakeMode === STATIC_BAKE_MODE.AUTHORED_ONE_BOUNCE
+            ? `Applied direct + authored one-bounce bake to ${changed.toLocaleString()} splats; generic splats remained occluders only`
+            : `Applied all-splat direct bake to ${changed.toLocaleString()} splats; no indirect light was added`);
+        } catch (error) {
+          if (request !== this.staticBakeRequest) return;
+          const message = error instanceof Error ? error.message : "Static bake failed";
+          this.staticBakeStaleReason = `Error: ${message}`;
+          this.updateStatus(`Static bake failed: ${message}`);
+        } finally {
+          if (request === this.staticBakeRequest) {
+            this.staticBakeApplying = false;
+            this.syncStaticBakeUi();
+          }
+        }
+      }
+
+      cancelStaticBake() {
+        if (!this.staticBakeApplying) return;
+        this.staticBakeRequest += 1;
+        this.staticBakeController.cancel();
+        this.staticBakeApplying = false;
+        this.staticBakeStaleReason = "Canceled";
+        this.staticBakeStatusText = "";
+        this.syncStaticBakeUi();
+        this.updateStatus("Static bake cancel requested; no partial colors will be applied");
+      }
+
+      clearStaticBake() {
+        if (!this.staticBakeApplied || !this.staticBakeResultSnapshot || !this.staticBakeOriginalRgb) return;
+        try {
+          const restored = this.applyStaticBakeColors(this.staticBakeResultSnapshot, this.staticBakeOriginalRgb);
+          this.staticBakeApplied = false;
+          this.staticBakeOriginalRgb = null;
+          this.staticBakeResultSnapshot = null;
+          this.staticBakeStaleReason = "";
+          this.staticBakeStatusText = "";
+          this.applyRenderMode(false);
+          this.refreshActiveBackendSnapshot("Static bake restored");
+          this.updateStatus(`Restored immutable pre-bake RGB for ${restored.toLocaleString()} splats`);
+        } catch (error) {
+          const message = error instanceof Error ? error.message : "Static bake restore failed";
+          this.staticBakeStaleReason = `Restore failed: ${message}`;
+          this.updateStatus(`Static bake restore failed: ${message}`);
+        } finally {
+          this.syncStaticBakeUi();
+        }
       }
 
       setSectionDisabled(section, disabled, allowedButtons = []) {
@@ -2418,6 +3451,8 @@ function startSparkViewer() {
         this.syncSelectedSplatControls(true);
         this.syncSelectedLightControls(true);
         this.applyRenderMode(false);
+        this.syncAnimationEditor();
+        this.syncAnimationControls(true);
         this.updateNormalizeFieldState();
         this.updateMetaUi();
         this.syncSceneList();
@@ -2443,6 +3478,8 @@ function startSparkViewer() {
         this.syncSelectedLightControls(true);
         this.updatePositionModifierBounds();
         this.applyRenderMode(false);
+        this.syncAnimationEditor();
+        this.syncAnimationControls(true);
         this.updateNormalizeFieldState();
         this.updateMetaUi();
         this.syncSceneList();
@@ -2485,22 +3522,55 @@ function startSparkViewer() {
         }
       }
 
+      reconcileAlignPointContext() {
+        // Picked coordinates are world-space measurements, valid only for
+        // these participants at these geometry/transformation revisions.
+        const context = JSON.stringify(["source", "target"].map((role) => {
+          const item = this.getAlignSelection(role);
+          item?.mesh?.updateWorldMatrix?.(true, false);
+          return [item?.id ?? null, item?.geometryRevision ?? 0,
+            Array.from(item?.mesh?.matrixWorld?.elements ?? [])];
+        }));
+        const changed = this.alignPointContext !== null && this.alignPointContext !== context;
+        this.alignPointContext = context;
+        if (changed) {
+          const hadPoints = this.alignPoints.source.length || this.alignPoints.target.length;
+          this.alignPoints = { source: [], target: [] };
+          this.disposeAlignMarkers();
+          this.alignPickMode = false;
+          if (hadPoints) this.updateStatus("Alignment targets changed; pick matching points again");
+          this.forceVisualRefresh(2);
+        }
+        return changed;
+      }
+
       syncAlignUi() {
         if (!this.dom.alignSourceSelect || !this.dom.alignTargetSelect) {
           return;
         }
         const previousSource = this.dom.alignSourceSelect.value;
         const previousTarget = this.dom.alignTargetSelect.value;
-        const buildOptions = (selectedId) => this.sceneItems.map((item, index) => {
-          const label = `${index + 1}. ${item.modelMeta.name}`;
-          return `<option value="${item.id}"${item.id === selectedId ? " selected" : ""}>${label}</option>`;
-        }).join("");
-        this.dom.alignSourceSelect.innerHTML = buildOptions(previousSource);
-        this.dom.alignTargetSelect.innerHTML = buildOptions(previousTarget);
+        const buildOptions = (select, selectedId) => {
+          select.replaceChildren(...this.sceneItems.map((item, index) => {
+            const option = document.createElement("option");
+            option.value = item.id;
+            option.textContent = `${index + 1}. ${item.modelMeta.name}`;
+            option.selected = item.id === selectedId;
+            return option;
+          }));
+        };
+        buildOptions(this.dom.alignSourceSelect, previousSource);
+        buildOptions(this.dom.alignTargetSelect, previousTarget);
         this.ensureAlignSelections();
+        this.reconcileAlignPointContext();
         this.renderAlignPointList();
         const pairs = Math.min(this.alignPoints.source.length, this.alignPoints.target.length);
+        const viewportEditingAvailable = this.isSparkViewportEditingAvailable();
+        const animatedParticipant = this.state.animationApplied && [
+          this.dom.alignSourceSelect.value, this.dom.alignTargetSelect.value,
+        ].includes(this.activeAnimationTargetItemId);
         const ready = this.sceneItems.length >= 2
+          && !animatedParticipant
           && this.dom.alignSourceSelect.value
           && this.dom.alignTargetSelect.value
           && this.dom.alignSourceSelect.value !== this.dom.alignTargetSelect.value
@@ -2515,12 +3585,16 @@ function startSparkViewer() {
           this.dom.alignResetButton.disabled = !resetItem;
         }
         if (this.dom.alignAddPointButton) {
-          this.dom.alignAddPointButton.disabled = this.sceneItems.length < 1;
+          this.dom.alignAddPointButton.disabled = !viewportEditingAvailable || animatedParticipant || this.sceneItems.length < 1;
           this.dom.alignAddPointButton.classList.toggle("is-active", this.alignPickMode);
           this.dom.alignAddPointButton.textContent = this.alignPickMode ? "Click Splat..." : "Add Point";
         }
         if (this.dom.alignStatus) {
-          this.dom.alignStatus.textContent = ready
+          this.dom.alignStatus.textContent = animatedParticipant
+            ? "Clear the participant's animation before picking or aligning."
+            : !viewportEditingAvailable
+            ? "Point picking is available in Spark; existing coordinates remain editable."
+            : ready
             ? `${pairs} matching pairs ready. Source will align to Target.`
             : `Need two splats and 3 matching point pairs. Current pairs: ${pairs}.`;
         }
@@ -2578,11 +3652,18 @@ function startSparkViewer() {
           input.dataset.alignIndex = String(index);
           input.dataset.alignAxis = axis;
           input.title = `${formatAlignPointLabel({ role, index: index + 1 })} ${axis.toUpperCase()}`;
+          input.setAttribute("aria-label", input.title);
           input.value = point ? formatNumber(point[axis], 3) : "";
           input.disabled = !point;
-          input.addEventListener("change", () => this.updateAlignPointCoordinate(role, index, axis, input.value));
+          input.addEventListener("blur", () => {
+            // Preserve full-precision picked coordinates when the field was not edited.
+            if (!point || input.value === formatNumber(point[axis], 3)) return;
+            this.updateAlignPointCoordinate(role, index, axis, input.value);
+            input.value = formatNumber(point[axis], 3);
+          });
           input.addEventListener("keydown", (event) => {
             if (event.key === "Enter") {
+              event.preventDefault();
               input.blur();
             }
           });
@@ -2594,15 +3675,16 @@ function startSparkViewer() {
 
       updateAlignPointCoordinate(role, index, axis, rawValue) {
         const point = this.alignPoints[role]?.[index];
+        if (String(rawValue).trim() === "") return;
         const value = Number(rawValue);
         if (!point || !["x", "y", "z"].includes(axis) || !Number.isFinite(value)) {
-          this.renderAlignPointList();
           return;
         }
+        if (point[axis] === value) return;
         point[axis] = value;
-        this.rebuildAlignMarkers();
-        this.syncAlignUi();
-        this.updateStatus(`Edited ${formatAlignPointLabel({ role, index: index + 1 })} ${axis.toUpperCase()} to ${formatNumber(value, 3)}`);
+        const label = formatAlignPointLabel({ role, index: index + 1 });
+        this.alignMarkers.find((marker) => marker.name === label)?.position.copy(point);
+        this.updateStatus(`Edited ${label} ${axis.toUpperCase()} to ${formatNumber(value, 3)}`);
         this.forceVisualRefresh(2);
       }
 
@@ -2616,6 +3698,12 @@ function startSparkViewer() {
       }
 
       startAlignPointPick() {
+        if (!this.isSparkViewportEditingAvailable()) {
+          this.alignPickMode = false;
+          this.syncAlignUi();
+          this.updateStatus("Switch to Spark to pick alignment points in the viewport");
+          return;
+        }
         this.alignPickMode = true;
         this.syncAlignUi();
         const role = this.dom.alignRoleSelect?.value === "target" ? "target" : "source";
@@ -2626,6 +3714,7 @@ function startSparkViewer() {
       }
 
       pickAlignPoint(event) {
+        this.reconcileAlignPointContext();
         const role = this.dom.alignRoleSelect?.value === "target" ? "target" : "source";
         const expectedItem = this.getAlignSelection(role);
         if (!expectedItem?.mesh) {
@@ -2669,9 +3758,20 @@ function startSparkViewer() {
         this.alignMarkers.push(marker);
       }
 
-      rebuildAlignMarkers() {
-        this.alignMarkers.forEach((marker) => this.scene.remove(marker));
+      disposeAlignMarkers() {
+        this.alignMarkers.forEach((marker) => {
+          this.scene.remove(marker);
+          marker.traverse((child) => {
+            child.geometry?.dispose();
+            const materials = Array.isArray(child.material) ? child.material : [child.material];
+            materials.forEach((material) => material?.dispose());
+          });
+        });
         this.alignMarkers = [];
+      }
+
+      rebuildAlignMarkers() {
+        this.disposeAlignMarkers();
         ["source", "target"].forEach((role) => {
           this.alignPoints[role].forEach((point, index) => {
             this.addAlignMarker({ role, index: index + 1, point });
@@ -2715,6 +3815,7 @@ function startSparkViewer() {
         this.refreshLightingModel();
         this.updateMetaUi();
         this.syncAlignUi();
+        this.refreshActiveBackendSnapshot("Alignment transform updated");
         this.forceVisualRefresh(4);
       }
 
@@ -2736,8 +3837,7 @@ function startSparkViewer() {
 
       clearAlignPoints() {
         this.alignPoints = { source: [], target: [] };
-        this.alignMarkers.forEach((marker) => this.scene.remove(marker));
-        this.alignMarkers = [];
+        this.disposeAlignMarkers();
         this.alignPickMode = false;
         this.syncAlignUi();
         this.updateStatus("Alignment points cleared");
@@ -2745,10 +3845,15 @@ function startSparkViewer() {
       }
 
       applyAlignment() {
+        this.reconcileAlignPointContext();
         const sourceItem = this.getAlignSelection("source");
         const targetItem = this.getAlignSelection("target");
         if (!sourceItem || !targetItem || sourceItem.id === targetItem.id) {
           this.updateStatus("Choose different Source and Target splats before aligning");
+          return;
+        }
+        if (this.state.animationApplied && [sourceItem.id, targetItem.id].includes(this.activeAnimationTargetItemId)) {
+          this.updateStatus("Clear the participant's animation before aligning");
           return;
         }
         try {
@@ -2765,7 +3870,9 @@ function startSparkViewer() {
           matrix4.scale(new THREE.Vector3(transform.scale, transform.scale, transform.scale));
           matrix4.setPosition(transform.translation.x, transform.translation.y, transform.translation.z);
           sourceItem.modelRoot.updateMatrixWorld(true);
-          const nextWorld = matrix4.multiply(sourceItem.modelRoot.matrixWorld.clone());
+          // The root carries translation; its child pivot carries the
+          // existing rotation/scale. Compose the full editable transform.
+          const nextWorld = matrix4.multiply(sourceItem.rotationPivot.matrixWorld.clone());
           const parentInverse = sourceItem.modelRoot.parent
             ? sourceItem.modelRoot.parent.matrixWorld.clone().invert()
             : new THREE.Matrix4();
@@ -2794,6 +3901,10 @@ function startSparkViewer() {
       }
 
       toggleTransformGizmo() {
+        if (!this.isSparkViewportEditingAvailable()) {
+          this.updateStatus("Switch to Spark to use the viewport gizmo");
+          return;
+        }
         this.state.showGizmo = !this.state.showGizmo;
         this.syncTransformGizmo();
         this.updateTransformGizmoButtons();
@@ -2807,20 +3918,25 @@ function startSparkViewer() {
 
       updateTransformGizmoButtons() {
         const lightSelected = Boolean(this.getSelectedLight());
+        const viewportEditingAvailable = this.isSparkViewportEditingAvailable();
         const effectiveMode = lightSelected ? "translate" : this.state.transformGizmoMode;
-        this.dom.toggleGizmoButton.classList.toggle("is-active", this.state.showGizmo);
-        this.dom.toggleGizmoButton.textContent = this.state.showGizmo ? "Gizmo On" : "Gizmo Off";
+        const gizmoVisible = viewportEditingAvailable && this.state.showGizmo;
+        this.dom.toggleGizmoButton.classList.toggle("is-active", gizmoVisible);
+        this.dom.toggleGizmoButton.textContent = gizmoVisible ? "Gizmo On" : "Gizmo Off";
         if (this.dom.lightGizmoButton) {
-          this.dom.lightGizmoButton.classList.toggle("is-active", this.state.showGizmo && lightSelected);
-          this.dom.lightGizmoButton.textContent = this.state.showGizmo && lightSelected
+          this.dom.lightGizmoButton.classList.toggle("is-active", gizmoVisible && lightSelected);
+          this.dom.lightGizmoButton.textContent = gizmoVisible && lightSelected
             ? "Move Gizmo On"
             : "Move Gizmo Off";
+          this.dom.lightGizmoButton.disabled = !viewportEditingAvailable;
         }
         this.dom.gizmoTranslateButton.classList.toggle("is-active", effectiveMode === "translate");
         this.dom.gizmoRotateButton.classList.toggle("is-active", effectiveMode === "rotate");
         this.dom.gizmoScaleButton.classList.toggle("is-active", effectiveMode === "scale");
-        this.dom.gizmoRotateButton.disabled = lightSelected;
-        this.dom.gizmoScaleButton.disabled = lightSelected;
+        this.dom.toggleGizmoButton.disabled = !viewportEditingAvailable;
+        this.dom.gizmoTranslateButton.disabled = !viewportEditingAvailable;
+        this.dom.gizmoRotateButton.disabled = !viewportEditingAvailable || lightSelected;
+        this.dom.gizmoScaleButton.disabled = !viewportEditingAvailable || lightSelected;
       }
 
       syncTransformGizmo() {
@@ -2828,6 +3944,7 @@ function startSparkViewer() {
         const item = this.getSelectedItem();
         if (
           !this.state.showGizmo
+          || !this.isSparkViewportEditingAvailable()
           || (light && !light.visible)
           || (!light && (!item || !item.visible))
         ) {
@@ -2876,6 +3993,7 @@ function startSparkViewer() {
         if (!item || !item.modelRoot || !item.rotationPivot) {
           return;
         }
+        this.markStaticBakeStale("Splat transform changed");
         this.state.translateX = item.modelRoot.position.x;
         this.state.translateY = item.modelRoot.position.y;
         this.state.translateZ = item.modelRoot.position.z;
@@ -2890,7 +4008,10 @@ function startSparkViewer() {
         item.transform.translateX = this.state.translateX;
         item.transform.translateY = this.state.translateY;
         item.transform.translateZ = this.state.translateZ;
+        this.invalidateLightOcclusion("Splat transform changed");
         this.syncTransformInputs();
+        this.syncAlignUi();
+        this.syncActiveBackendItemTransforms();
         this.scheduleSelectedTransformRefresh(false, false);
         this.forceVisualRefresh(3);
       }
@@ -2995,6 +4116,13 @@ function startSparkViewer() {
       }
 
       syncExportList() {
+        const exportableItems = this.sceneItems.filter((item) => item.mesh);
+        const hasSelection = exportableItems.some((item) => item.exportEnabled);
+        if (this.dom.saveSceneSplatsButton) this.dom.saveSceneSplatsButton.disabled = !hasSelection;
+        if (this.dom.exportEnableAllButton) {
+          this.dom.exportEnableAllButton.disabled = !exportableItems.some((item) => !item.exportEnabled);
+        }
+        if (this.dom.exportDisableAllButton) this.dom.exportDisableAllButton.disabled = !hasSelection;
         if (!this.dom.exportList || !this.dom.exportEmpty) {
           return;
         }
@@ -3022,6 +4150,8 @@ function startSparkViewer() {
           toggleButton.className = `scene-item-button${item.exportEnabled ? " is-active" : ""}`;
           toggleButton.textContent = item.exportEnabled ? "On" : "Off";
           toggleButton.title = "Toggle whether this splat will be included in export.";
+          toggleButton.setAttribute("aria-label", `${item.exportEnabled ? "Exclude" : "Include"} ${item.modelMeta.name} from export`);
+          toggleButton.setAttribute("aria-pressed", String(item.exportEnabled));
           toggleButton.addEventListener("click", () => this.toggleExportItem(item.id));
 
           row.append(body, toggleButton);
@@ -3078,6 +4208,7 @@ function startSparkViewer() {
         if (!this.dom.sceneList || !this.dom.sceneEmpty) {
           return;
         }
+        this.syncOpenFileAction();
         this.dom.sceneList.replaceChildren();
         this.dom.sceneEmpty.hidden = this.sceneItems.length > 0;
         const total = this.sceneItems.length;
@@ -3111,6 +4242,7 @@ function startSparkViewer() {
           mainButton.type = "button";
           mainButton.className = "scene-item-main";
           mainButton.title = "Select this splat item.";
+          mainButton.setAttribute("aria-label", `Select splat ${item.modelMeta.name}`);
           mainButton.addEventListener("click", () => this.selectSceneItem(item.id));
 
           const name = document.createElement("p");
@@ -3132,6 +4264,8 @@ function startSparkViewer() {
           }
           toggleButton.textContent = item.visible ? "On" : "Off";
           toggleButton.title = "Toggle item visibility.";
+          toggleButton.setAttribute("aria-label", `${item.visible ? "Hide" : "Show"} splat ${item.modelMeta.name}`);
+          toggleButton.setAttribute("aria-pressed", String(item.visible));
           toggleButton.addEventListener("click", () => this.toggleSceneItemVisibility(item.id));
 
           const deleteButton = document.createElement("button");
@@ -3139,6 +4273,7 @@ function startSparkViewer() {
           deleteButton.className = "scene-item-button";
           deleteButton.textContent = "Delete";
           deleteButton.title = "Delete this splat item from the scene.";
+          deleteButton.setAttribute("aria-label", `Delete splat ${item.modelMeta.name}`);
           deleteButton.addEventListener("click", () => this.removeSceneItem(item.id));
 
           row.append(mainButton, toggleButton, deleteButton);
@@ -3151,11 +4286,13 @@ function startSparkViewer() {
         if (!this.dom.lightList || !this.dom.lightEmpty) {
           return;
         }
+        this.syncOpenFileAction();
         this.dom.lightList.replaceChildren();
         this.dom.lightEmpty.hidden = this.sceneLights.length > 0;
         this.sceneLights.forEach((light) => {
           const row = document.createElement("div");
           row.className = "scene-item";
+          row.dataset.lightId = light.id;
           if (light.id === this.selectedLightId) {
             row.classList.add("is-active");
           }
@@ -3164,6 +4301,7 @@ function startSparkViewer() {
           mainButton.type = "button";
           mainButton.className = "scene-item-main";
           mainButton.title = "Select this point light.";
+          mainButton.setAttribute("aria-label", `Select light ${light.name}`);
           mainButton.addEventListener("click", () => this.selectLight(light.id));
 
           const name = document.createElement("p");
@@ -3184,6 +4322,8 @@ function startSparkViewer() {
           }
           toggleButton.textContent = light.visible ? "On" : "Off";
           toggleButton.title = "Toggle this point light.";
+          toggleButton.setAttribute("aria-label", `${light.visible ? "Hide" : "Show"} light ${light.name}`);
+          toggleButton.setAttribute("aria-pressed", String(light.visible));
           toggleButton.addEventListener("click", () => this.toggleLightVisibility(light.id));
 
           const deleteButton = document.createElement("button");
@@ -3191,11 +4331,21 @@ function startSparkViewer() {
           deleteButton.className = "scene-item-button";
           deleteButton.textContent = "Delete";
           deleteButton.title = "Delete this point light.";
+          deleteButton.setAttribute("aria-label", `Delete light ${light.name}`);
           deleteButton.addEventListener("click", () => this.removeLight(light.id));
 
           row.append(mainButton, toggleButton, deleteButton);
           this.dom.lightList.append(row);
         });
+      }
+
+      syncLightListIntensity(light) {
+        const row = Array.from(this.dom.lightList?.children ?? [])
+          .find((entry) => entry.dataset.lightId === light.id);
+        const meta = row?.querySelector(".scene-item-meta");
+        if (meta) {
+          meta.textContent = `${light.visible ? "On" : "Off"} / I ${formatNumber(light.intensity, light.intensity < 10 ? 2 : 1)}`;
+        }
       }
 
       addPointLight() {
@@ -3261,8 +4411,9 @@ function startSparkViewer() {
         }
         light.intensity = intensity;
         this.updateLightVisual(light);
-        this.syncLightList();
-        this.refreshLightingModel();
+        // Preserve pressed/focused list buttons when an input blur commits.
+        this.syncLightListIntensity(light);
+        this.refreshLightingModel({ occlusionChanged: false });
         if (updateStatus) {
           this.updateStatus(`${light.name} intensity updated`);
         }
@@ -3325,8 +4476,7 @@ function startSparkViewer() {
         if (light) {
           light.color = { ...color };
           this.updateLightVisual(light);
-          this.syncLightList();
-          this.refreshLightingModel();
+          this.refreshLightingModel({ occlusionChanged: false });
         }
         if (commit) {
           this.syncSelectedLightControls(true);
@@ -3356,7 +4506,6 @@ function startSparkViewer() {
           if (this.transformControls.object === light.root) {
             this.transformControls.attach(light.root);
           }
-          this.syncLightList();
           this.refreshLightingModel();
           if (commit) {
             this.finishDeferredInteraction();
@@ -3374,8 +4523,8 @@ function startSparkViewer() {
         if (!visibleItems.length) {
           return [];
         }
-        const perItemBudget = Math.max(4, Math.floor(LIGHT_OCCLUDER_LIMIT / Math.max(visibleItems.length, 1)));
-        const samples = [];
+        const perItemBudget = Math.max(1, Math.floor(LIGHT_OCCLUDER_LIMIT / visibleItems.length));
+        const itemSamples = [];
         visibleItems.forEach((item) => {
           const sourceEntries = item.hoverEntries?.length
             ? item.hoverEntries
@@ -3384,6 +4533,7 @@ function startSparkViewer() {
             return;
           }
           const step = Math.max(1, Math.ceil(sourceEntries.length / perItemBudget));
+          const samples = [];
           for (let index = 0; index < sourceEntries.length && samples.length < LIGHT_OCCLUDER_LIMIT; index += step) {
             const entry = sourceEntries[index];
             const radius = Math.max(
@@ -3392,16 +4542,38 @@ function startSparkViewer() {
               Number(entry.scale?.z ?? 0.05) || 0.05,
             );
             samples.push({
+              baseLinearRgb: toLinearRgbArray(entry.color),
               itemId: item.id,
+              localNormal: entry.localNormal?.clone?.() ?? null,
               localPosition: entry.position.clone(),
+              ordinal: index,
               opacity: THREE.MathUtils.clamp(Number(entry.alpha ?? 1) || 0, 0, 1),
               radius,
+              sourceSampleCount: sourceEntries.length,
             });
-            if (samples.length >= LIGHT_OCCLUDER_LIMIT) {
+            if (samples.length >= perItemBudget) {
               break;
             }
           }
+          if (samples.length) {
+            itemSamples.push(samples);
+          }
         });
+        // Interleave scene items so a later occluder (for example a Cube cast
+        // onto a previously loaded target) is represented in the fixed GPU set.
+        const samples = [];
+        for (let sampleIndex = 0; samples.length < LIGHT_OCCLUDER_LIMIT; sampleIndex += 1) {
+          let added = false;
+          itemSamples.forEach((entries) => {
+            if (samples.length < LIGHT_OCCLUDER_LIMIT && entries[sampleIndex]) {
+              samples.push(entries[sampleIndex]);
+              added = true;
+            }
+          });
+          if (!added) {
+            break;
+          }
+        }
         return samples;
       }
 
@@ -3447,15 +4619,127 @@ function startSparkViewer() {
           this.lightHandles.colorG[index].value = lightColor.g;
           this.lightHandles.colorB[index].value = lightColor.b;
         });
-        this.activeOccluderCount = 0;
-        this.runtimeLightOccluders = [];
+        const needsLegacyCandidates = this.state.legacySampledShadow || this.state.oneBouncePreview;
+        this.lightOccluderSamples = needsLegacyCandidates ? this.collectLightOccluderSamples() : [];
+        const worldScale = new THREE.Vector3();
+        const worldCandidates = this.lightOccluderSamples.flatMap((sample) => {
+          const item = this.getSceneItemById(sample.itemId);
+          if (!item?.mesh) {
+            return [];
+          }
+          item.mesh.updateMatrixWorld(true);
+          worldScale.setFromMatrixScale(item.mesh.matrixWorld);
+          const radiusScale = Math.max(
+            Math.abs(worldScale.x),
+            Math.abs(worldScale.y),
+            Math.abs(worldScale.z),
+          );
+          const itemOpacity = THREE.MathUtils.clamp(Number(item.settings?.opacity ?? 1) || 0, 0, 1);
+          const sampleOpacity = THREE.MathUtils.clamp(Number(sample.opacity) || 0, 0, 1);
+          if (!(itemOpacity > 0) || !(sampleOpacity > 0)) {
+            return [];
+          }
+          const surfaceRadius = Math.max((Number(sample.radius) || 0) * radiusScale, 0);
+          const beautyExposureScale = this.getBeautyExposureScaleForItem(item);
+          return [{
+            baseLinearRgb: sample.baseLinearRgb.map(
+              (value) => Math.max((Number(value) || 0) * beautyExposureScale, 0),
+            ),
+            hasAuthoredNormal: item.hasAuthoredSplatNormals,
+            itemId: sample.itemId,
+            opacity: sampleOpacity * itemOpacity,
+            normal: this.getSampleWorldNormal(item, sample),
+            ordinal: sample.ordinal,
+            position: sample.localPosition.clone().applyMatrix4(item.mesh.matrixWorld),
+            radius: surfaceRadius,
+            sourceSampleCount: sample.sourceSampleCount,
+            stableId: `${sample.itemId}:${sample.ordinal}`,
+            surfaceRadius,
+          }];
+        });
+        const slotCount = Math.min(LIGHT_SHADOW_GPU_SLOT_LIMIT, worldCandidates.length);
+        const selectedCandidates = Array.from({ length: slotCount }, (_, slotIndex) => {
+          const candidateIndex = Math.min(
+            Math.floor(((slotIndex + 0.5) * worldCandidates.length) / slotCount),
+            worldCandidates.length - 1,
+          );
+          return worldCandidates[candidateIndex];
+        });
+        const selectedCountByItem = new Map();
+        selectedCandidates.forEach((candidate) => {
+          selectedCountByItem.set(
+            candidate.itemId,
+            (selectedCountByItem.get(candidate.itemId) || 0) + 1,
+          );
+        });
+        this.runtimeLightOccluders = this.state.legacySampledShadow
+          ? selectedCandidates.map((candidate) => ({
+            ...candidate,
+            radius: computeSampledGaussianProxyRadius({
+              selectedSampleCount: selectedCountByItem.get(candidate.itemId),
+              sourceSampleCount: candidate.sourceSampleCount,
+              worldRadius: candidate.radius,
+            }),
+          }))
+          : [];
+        this.activeOccluderCount = this.runtimeLightOccluders.length;
+        this.ensureDynoHandleArray(
+          this.lightHandles.occluderPositions,
+          this.activeOccluderCount,
+          (index) => dynoVec3(new THREE.Vector3(), `viewerLightOccluderPosition${index}`),
+        );
+        this.ensureDynoHandleArray(
+          this.lightHandles.occluderRadii,
+          this.activeOccluderCount,
+          (index) => dynoFloat(0, `viewerLightOccluderRadius${index}`),
+        );
+        this.ensureDynoHandleArray(
+          this.lightHandles.occluderOpacities,
+          this.activeOccluderCount,
+          (index) => dynoFloat(0, `viewerLightOccluderOpacity${index}`),
+        );
+        this.runtimeLightOccluders.forEach((occluder, index) => {
+          this.lightHandles.occluderPositions[index].value.copy(occluder.position);
+          this.lightHandles.occluderRadii[index].value = occluder.radius;
+          this.lightHandles.occluderOpacities[index].value = occluder.opacity;
+        });
+        const firstVisibleLight = activeLights[0] ?? null;
+        const vplCandidates = selectedCandidates.map((candidate) => ({
+          ...candidate,
+          visibility: firstVisibleLight
+            ? this.evaluateLightTransmission(firstVisibleLight.position, candidate.position, candidate.itemId)
+            : 0,
+        }));
+        this.runtimeOneBounceVpls = selectOneBounceVpls({
+          candidates: vplCandidates,
+          enabled: this.state.oneBouncePreview,
+          light: firstVisibleLight,
+        });
+        this.activeOneBounceVplCount = this.runtimeOneBounceVpls.length;
+        for (let vplIndex = 0; vplIndex < ONE_BOUNCE_VPL_LIMIT; vplIndex += 1) {
+          const vpl = this.runtimeOneBounceVpls[vplIndex];
+          const position = vpl?.position ?? [0, 0, 0];
+          const normal = vpl?.normal ?? [0, 0, 1];
+          const flux = vpl?.flux ?? [0, 0, 0];
+          this.lightHandles.oneBouncePositions[vplIndex].value.set(position[0], position[1], position[2]);
+          this.lightHandles.oneBounceNormals[vplIndex].value.set(normal[0], normal[1], normal[2]);
+          this.lightHandles.oneBounceRadii[vplIndex].value = vpl?.radius ?? 0;
+          this.lightHandles.oneBounceFluxR[vplIndex].value = flux[0];
+          this.lightHandles.oneBounceFluxG[vplIndex].value = flux[1];
+          this.lightHandles.oneBounceFluxB[vplIndex].value = flux[2];
+        }
       }
 
-      refreshLightingModel({ forceModifierRebuild = false } = {}) {
+      refreshLightingModel({ forceModifierRebuild = false, occlusionChanged = true } = {}) {
+        this.markStaticBakeStale("Light, opacity, transform, or visibility changed");
+        if (occlusionChanged) this.invalidateLightOcclusion("Light or geometry changed");
         const previousLightCount = this.activeLightCount;
+        const previousOccluderCount = this.activeOccluderCount;
         this.syncLightingRuntimeState();
+        this.syncStaticBakeUi();
         const needsRebuild = forceModifierRebuild
-          || previousLightCount !== this.activeLightCount;
+          || previousLightCount !== this.activeLightCount
+          || previousOccluderCount !== this.activeOccluderCount;
         if (needsRebuild) {
           this.applyRenderMode(false);
           this.queueSparkSceneUpdate();
@@ -3516,6 +4800,24 @@ function startSparkViewer() {
         this.syncColorPickButton();
       }
 
+      getSplatLocalNormal(splat) {
+        const scales = splat?.scales ?? splat?.scale;
+        const scaleX = Number(scales?.x ?? 0) || 0;
+        const scaleY = Number(scales?.y ?? 0) || 0;
+        const scaleZ = Number(scales?.z ?? 0) || 0;
+        const normal = new THREE.Vector3();
+        if (scaleZ <= scaleX && scaleZ <= scaleY) {
+          normal.set(0, 0, 1);
+        } else if (scaleY <= scaleX) {
+          normal.set(0, 1, 0);
+        } else {
+          normal.set(1, 0, 0);
+        }
+        return splat?.quaternion
+          ? normal.applyQuaternion(splat.quaternion).normalize()
+          : normal;
+      }
+
       createMeshHoverEntries(item, maxEntries = 4096) {
         const packedSplats = item?.mesh?.packedSplats;
         const count = Number(item?.mesh?.numSplats ?? packedSplats?.numSplats ?? 0);
@@ -3537,6 +4839,7 @@ function startSparkViewer() {
             alpha: Number(splat.opacity ?? splat.alpha ?? splat.rgba?.w ?? splat.rgba?.a ?? 1) || 0,
             color: toLinearRgbArray(splat.color ?? splat.rgb ?? splat.rgba),
             label: `Splat ${index + 1}`,
+            localNormal: this.getSplatLocalNormal(splat),
             position: new THREE.Vector3(center.x, center.y, center.z),
             scale: new THREE.Vector3(
               Number(scales?.x ?? 0.05) || 0.05,
@@ -3603,8 +4906,9 @@ function startSparkViewer() {
           baseLinearRgb: toLinearRgbArray(bestEntry.entry.color),
           itemId: item.id,
           label: bestEntry.entry.label || `Splat ${bestEntry.index + 1}`,
+          localNormal: bestEntry.entry.localNormal?.clone?.(),
           localPosition: bestEntry.entry.position.clone(),
-          splatIndex: bestEntry.index,
+          splatIndex: bestEntry.entry.splatIndex ?? bestEntry.index,
         };
       }
 
@@ -3641,9 +4945,10 @@ function startSparkViewer() {
           baseLinearRgb: toLinearRgbArray(bestEntry.entry.color),
           itemId: item.id,
           label: bestEntry.entry.label || `Splat ${bestEntry.index + 1}`,
+          localNormal: bestEntry.entry.localNormal?.clone?.(),
           localPosition: bestEntry.entry.position.clone(),
           screenDistanceSq: bestDistance,
-          splatIndex: bestEntry.index,
+          splatIndex: bestEntry.entry.splatIndex ?? bestEntry.index,
           viewDepth: bestDepth,
         };
       }
@@ -3679,11 +4984,15 @@ function startSparkViewer() {
         if (!bestSplat || bestIndex < 0) {
           return null;
         }
+        // Public decoders reuse a scratch object; fetch the winner again
+        // after scanning instead of retaining the last decoded splat.
+        bestSplat = this.getPackedSplatAt(item, bestIndex);
         return {
           alpha: Number(bestSplat.opacity ?? bestSplat.alpha ?? bestSplat.rgba?.w ?? bestSplat.rgba?.a ?? 1) || 0,
           baseLinearRgb: toLinearRgbArray(bestSplat.color ?? bestSplat.rgb ?? bestSplat.rgba),
           itemId: item.id,
           label: `Splat ${bestIndex + 1}`,
+          localNormal: this.getSplatLocalNormal(bestSplat),
           localPosition: new THREE.Vector3(
             bestSplat.center?.x ?? bestSplat.position?.x ?? 0,
             bestSplat.center?.y ?? bestSplat.position?.y ?? 0,
@@ -3732,11 +5041,13 @@ function startSparkViewer() {
         if (!bestSplat || bestIndex < 0) {
           return null;
         }
+        bestSplat = this.getPackedSplatAt(item, bestIndex);
         return {
           alpha: Number(bestSplat.opacity ?? bestSplat.alpha ?? bestSplat.rgba?.w ?? bestSplat.rgba?.a ?? 1) || 0,
           baseLinearRgb: toLinearRgbArray(bestSplat.color ?? bestSplat.rgb ?? bestSplat.rgba),
           itemId: item.id,
           label: `Splat ${bestIndex + 1}`,
+          localNormal: this.getSplatLocalNormal(bestSplat),
           localPosition: new THREE.Vector3(
             bestSplat.center?.x ?? bestSplat.position?.x ?? 0,
             bestSplat.center?.y ?? bestSplat.position?.y ?? 0,
@@ -3811,11 +5122,48 @@ function startSparkViewer() {
         return sample.localPosition.clone().applyMatrix4(item.mesh.matrixWorld);
       }
 
+      getSampleWorldNormal(item, sample) {
+        if (!item?.mesh || !sample?.localPosition) {
+          return null;
+        }
+        let localNormal = sample.localNormal?.clone?.() ?? null;
+        const authoredNormal = item.hasAuthoredSplatNormals && Number.isInteger(sample.splatIndex)
+          ? item.authoredNormalEntries?.[sample.splatIndex]?.normal : null;
+        if (authoredNormal) {
+          localNormal = authoredNormal.clone();
+        } else if (item.hasAuthoredSplatNormals) {
+          let closestDistanceSq = Infinity;
+          item.authoredNormalEntries?.forEach((entry) => {
+            if (!entry?.normal || !entry?.position) {
+              return;
+            }
+            const distanceSq = sample.localPosition.distanceToSquared(entry.position);
+            if (distanceSq < closestDistanceSq) {
+              closestDistanceSq = distanceSq;
+              localNormal = entry.normal.clone();
+            }
+          });
+        }
+        return localNormal?.transformDirection(item.mesh.matrixWorld) ?? null;
+      }
+
       evaluateLightTransmission(lightPosition, targetPosition, sourceItemId = null) {
-        void lightPosition;
-        void targetPosition;
+        // Keep same-item samples: endpoint bias rejects adjacent receiver
+        // splats while samples farther along the segment can self-shadow.
         void sourceItemId;
-        return 1;
+        return evaluateSampledLightTransmission({
+          lightPosition,
+          occluders: this.runtimeLightOccluders,
+          receiverPosition: targetPosition,
+        });
+      }
+
+      getCachedLightTransmission(item, sample, lightId) {
+        const cache = item.lightOcclusion;
+        if (!cache?.enabled.value || !Number.isInteger(sample.splatIndex)) return null;
+        const lightIndex = cache.lightIds.indexOf(lightId);
+        if (lightIndex < 0 || sample.splatIndex < 0 || sample.splatIndex >= cache.count.value) return null;
+        return cache.data[sample.splatIndex * cache.lightIds.length + lightIndex];
       }
 
       getDisplayLinearColorForSample(item, sample) {
@@ -3826,27 +5174,54 @@ function startSparkViewer() {
         const splatExposureScale = itemMode === "beauty" ? this.getBeautyExposureScaleForItem(item) : 1;
         const toneCurve = item.settings?.toneCurve ?? buildToneCurveState();
         const linear = sample.baseLinearRgb.map((value) => Math.max(value * splatExposureScale, 0));
-        if (itemMode !== "beauty" || !this.sceneLights.length) {
+        if (itemMode !== "beauty" || !this.sceneLights.length || this.staticBakeApplied) {
           return applyToneCurveToLinearRgb(linear, toneCurve);
         }
         const worldPosition = this.getSampleWorldPosition(item, sample);
-        if (!worldPosition) {
+        const worldNormal = this.getSampleWorldNormal(item, sample);
+        if (!worldPosition || !worldNormal) {
           return applyToneCurveToLinearRgb(linear, toneCurve);
         }
-        let lightSum = 0;
-        this.sceneLights.forEach((light) => {
-          if (!light.visible) {
-            return;
-          }
-          const distanceSq = Math.max(light.position.distanceToSquared(worldPosition), 0.0001);
-          lightSum += (light.intensity / distanceSq) * this.evaluateLightTransmission(light.position, worldPosition, item.id);
+        const normalPolicy = item.hasAuthoredSplatNormals
+          ? DIRECT_LIGHT_NORMAL_POLICY.AUTHORED_ONE_SIDED
+          : DIRECT_LIGHT_NORMAL_POLICY.IMPORTED_COVARIANCE_FACE_FORWARD;
+        const receiverNormal = orientDirectLightNormal({
+          cameraPosition: this.camera.getWorldPosition(new THREE.Vector3()),
+          normal: worldNormal,
+          normalPolicy,
+          position: worldPosition,
         });
-        const lightMultiplier = 1 + lightSum;
-        return applyToneCurveToLinearRgb([
-          Math.max(linear[0] * lightMultiplier, 0),
-          Math.max(linear[1] * lightMultiplier, 0),
-          Math.max(linear[2] * lightMultiplier, 0),
-        ], toneCurve);
+        let firstVisibleLight = true;
+        const directLinear = applyDirectLighting({
+          baseLinearRgb: linear,
+          lights: this.sceneLights.map((light) => {
+            const isFirstVisibleLight = light.visible && firstVisibleLight;
+            if (isFirstVisibleLight) {
+              firstVisibleLight = false;
+            }
+            return {
+              color: light.color,
+              intensity: light.intensity,
+              position: light.position,
+              visibility: this.getCachedLightTransmission(item, sample, light.id) ?? (isFirstVisibleLight
+                ? this.evaluateLightTransmission(light.position, worldPosition, item.id)
+                : 1),
+              visible: light.visible,
+            };
+          }),
+          cameraPosition: this.camera.getWorldPosition(new THREE.Vector3()),
+          normal: worldNormal,
+          normalPolicy,
+          position: worldPosition,
+        });
+        const directAndBounceLinear = applyOneBouncePreview({
+          baseLinearRgb: linear,
+          enabled: this.state.oneBouncePreview,
+          normal: receiverNormal,
+          position: worldPosition,
+          vpls: this.runtimeOneBounceVpls,
+        }).map((value, index) => directLinear[index] + (value - linear[index]));
+        return applyToneCurveToLinearRgb(directAndBounceLinear, toneCurve);
       }
 
       getPickedColorDisplay(entry) {
@@ -3939,7 +5314,7 @@ function startSparkViewer() {
           const outputSpace = this.dom.lutOutputColorSpaceSelect?.selectedOptions?.[0]?.textContent ?? "Linear sRGB";
           this.dom.lutStatus.textContent = hasLut
             ? `Loaded ${summarizeCubeLut(this.state.loadedLut)}. Workspace is linear sRGB; before LUT: ${inputSpace}, after LUT: ${outputSpace}.`
-            : "Load a 3D .cube LUT and apply it to the selected splat item. The workspace is linear sRGB, so choose the color-space conversion before and after LUT sampling.";
+            : "No LUT loaded.";
         }
       }
 
@@ -3983,6 +5358,11 @@ function startSparkViewer() {
       }
 
       applyLoadedLutToSelectedSplat() {
+        if (this.staticBakeApplied || this.staticBakeApplying) {
+          if (this.staticBakeApplying) this.markStaticBakeStale("LUT appearance edit requested");
+          this.updateStatus("Clear / Restore the static bake before applying a LUT");
+          return;
+        }
         const lut = this.state.loadedLut;
         const item = this.getSelectedItem();
         const splats = item?.mesh?.splats ?? item?.mesh?.extSplats ?? item?.mesh?.packedSplats;
@@ -4017,6 +5397,7 @@ function startSparkViewer() {
         this.invalidateRender();
         this.forceVisualRefresh(3);
         this.queueSparkSceneUpdate();
+        this.refreshActiveBackendSnapshot("LUT applied");
         this.updateStatus(`Applied ${summarizeCubeLut(lut)} to ${changed.toLocaleString()} splats in ${item.modelMeta.name}`);
       }
 
@@ -4049,6 +5430,7 @@ function startSparkViewer() {
           id: `picked-color-${++this.pickedColorSerial}`,
           itemId: sample.itemId,
           label: sample.label,
+          localNormal: sample.localNormal?.clone?.() ?? null,
           localPosition: sample.localPosition?.clone?.() ?? null,
           splatIndex: sample.splatIndex,
         });
@@ -4059,7 +5441,27 @@ function startSparkViewer() {
         this.updateStatus(`Picked ${sample.label}`);
       }
 
+      bindCommitInputs(inputs, onChange) {
+        inputs.filter(Boolean).forEach((input) => {
+          input.addEventListener("input", () => onChange(false));
+          input.addEventListener("blur", () => onChange(true));
+          input.addEventListener("keydown", (event) => {
+            if (event.key !== "Enter") return;
+            event.preventDefault();
+            input.blur();
+          });
+        });
+      }
+
       bindNumberPair({ input, range, limits, onChange }) {
+        // A wrapping label names only its first control. Name both members of
+        // a slider/input pair from the same live label, including mode changes.
+        const label = input?.closest(".field")?.querySelector(":scope > span");
+        if (label && input.id) {
+          label.id ||= `${input.id}-label`;
+          input.setAttribute("aria-labelledby", label.id);
+          range?.setAttribute("aria-labelledby", label.id);
+        }
         const getLimits = () => (typeof limits === "function" ? limits() : limits);
         range?.addEventListener("input", (event) => onChange(event.target.value, {
           commit: false,
@@ -4093,11 +5495,8 @@ function startSparkViewer() {
         }));
         input?.addEventListener("keydown", (event) => {
           if (event.key === "Enter") {
-            onChange(event.target.value, {
-              commit: true,
-              limits: getLimits(),
-              syncInput: true,
-            });
+            event.preventDefault();
+            // Blur owns the commit; invoking it here too doubles downstream work.
             event.target.blur();
           }
         });
@@ -4118,6 +5517,7 @@ function startSparkViewer() {
 
       applyBackground() {
         this.renderer.setClearColor(BACKGROUNDS[this.state.background] || BACKGROUNDS.graphite);
+        this.renderActiveBackendFrame();
         this.invalidateRender();
       }
 
@@ -4141,7 +5541,8 @@ function startSparkViewer() {
         if (updateChip) {
           this.updateRenderChip("Opacity updated");
         }
-        this.syncLightingRuntimeState();
+        this.refreshLightingModel();
+        this.refreshActiveBackendSnapshot("Opacity updated");
         this.renderPickedColors();
         this.invalidateRender();
       }
@@ -4157,6 +5558,7 @@ function startSparkViewer() {
       }
 
       applyFalloff(updateChip = true, syncInput = true) {
+        this.markStaticBakeStale("Appearance falloff changed");
         const falloff = clampNumber(this.state.falloff, FALLOFF_LIMITS);
         this.state.falloff = falloff;
         if (this.dom.falloffRange) {
@@ -4249,6 +5651,11 @@ function startSparkViewer() {
       }
 
       writeSplatGeometry(item, index, center, scales, sourceSplat = this.getPackedSplatAt(item, index)) {
+        if (this.staticBakeApplied || this.staticBakeApplying) {
+          if (this.staticBakeApplying) this.markStaticBakeStale("Splat geometry edit requested");
+          this.updateStatus("Clear / Restore the static bake before editing splat geometry");
+          return false;
+        }
         const splats = this.getEditableSplatStorage(item);
         if (!item?.mesh || !splats || !sourceSplat || !center || !scales) {
           return false;
@@ -4328,7 +5735,8 @@ function startSparkViewer() {
 
       syncBrushUi(syncInput = true) {
         const item = this.getSelectedItem();
-        const editable = Boolean(item?.mesh && this.getEditableSplatStorage(item));
+        const viewportEditingAvailable = this.isSparkViewportEditingAvailable();
+        const editable = Boolean(viewportEditingAvailable && item?.mesh && this.getEditableSplatStorage(item));
         if (!editable) {
           this.brushEnabled = false;
           this.brushStroke = null;
@@ -4386,7 +5794,9 @@ function startSparkViewer() {
           this.dom.brushResetButton,
         ]);
         if (this.dom.brushStatus) {
-          this.dom.brushStatus.textContent = editable
+          this.dom.brushStatus.textContent = !viewportEditingAvailable
+            ? "Brush viewport editing is available in Spark."
+            : editable
             ? (this.brushEnabled
               ? `${this.getBrushModeLabel()} brush active. Move changes position only, Standard pushes along camera Z, Scale changes size only.`
               : "Brush is off. Enable it, then left-drag in the viewport.")
@@ -4399,6 +5809,11 @@ function startSparkViewer() {
       }
 
       toggleBrushEditing() {
+        if (!this.isSparkViewportEditingAvailable()) {
+          this.updateStatus("Switch to Spark to use the viewport brush");
+          this.syncBrushUi(true);
+          return;
+        }
         const item = this.getSelectedItem();
         if (!item?.mesh || !this.getEditableSplatStorage(item)) {
           this.updateStatus("Select an editable splat item before brushing");
@@ -4484,9 +5899,9 @@ function startSparkViewer() {
             toneMapped: false,
             uniforms: { opacity: { value: 0.34 } },
             vertexColors: true,
+            // ShaderMaterial injects the color attribute when vertex colors are enabled.
             vertexShader: `
               attribute float size;
-              attribute vec3 color;
               varying vec3 vColor;
               void main() {
                 vColor = color;
@@ -4504,7 +5919,7 @@ function startSparkViewer() {
                 if (distanceFromCenter > 0.5) {
                   discard;
                 }
-                float edge = smoothstep(0.5, 0.32, distanceFromCenter);
+                float edge = 1.0 - smoothstep(0.32, 0.5, distanceFromCenter);
                 gl_FragColor = vec4(vColor, opacity * edge);
               }
             `,
@@ -4756,6 +6171,7 @@ function startSparkViewer() {
         this.brushStroke = null;
         this.syncBrushUi(false);
         if (item && touched) {
+          this.refreshActiveBackendSnapshot("Brush stroke completed");
           this.updateStatus(`Brush stroke edited ${touched.toLocaleString()} splats in ${item.modelMeta.name}`);
         }
       }
@@ -4859,6 +6275,10 @@ function startSparkViewer() {
         if (!changed) {
           return;
         }
+        this.markStaticBakeStale("Brush geometry changed");
+        item.geometryRevision += 1;
+        this.invalidateLightOcclusion("Brush geometry changed");
+        this.syncAlignUi();
         this.brushStroke.touched += changed;
         const storage = this.getEditableSplatStorage(item);
         this.markSplatStorageNeedsUpdate(storage);
@@ -4901,6 +6321,13 @@ function startSparkViewer() {
         this.invalidateRender();
         this.forceVisualRefresh(3);
         this.queueSparkSceneUpdate();
+        if (restored) {
+          item.geometryRevision += 1;
+          this.invalidateLightOcclusion("Brush undo changed geometry");
+          this.syncAlignUi();
+          this.markStaticBakeStale("Brush undo changed geometry");
+          this.refreshActiveBackendSnapshot("Brush undo completed");
+        }
         this.syncBrushUi(false);
         this.updateStatus(`Undid brush stroke on ${restored.toLocaleString()} splats`);
       }
@@ -4912,7 +6339,7 @@ function startSparkViewer() {
             Number(source.x ?? source[1] ?? 0) || 0,
             Number(source.y ?? source[2] ?? 0) || 0,
             Number(source.z ?? source[3] ?? 0) || 0,
-            Number(source.w ?? source[0] ?? 1) || 1,
+            Number(source.w ?? source[0] ?? 1),
           ).normalize();
         }
         const sourceNormal = splat?.normal ?? splat?.norm ?? splat?.n;
@@ -5088,6 +6515,7 @@ function startSparkViewer() {
       }
 
       applyExposure(updateChip = true, syncInput = true) {
+        this.markStaticBakeStale("Scene exposure changed");
         const exposure = clampNumber(this.state.exposure, EXPOSURE_LIMITS);
         this.state.exposure = exposure;
         this.renderer.toneMappingExposure = 1;
@@ -5117,6 +6545,7 @@ function startSparkViewer() {
       }
 
       applyToneCurve(updateChip = true, syncInput = true, { commit = true } = {}) {
+        this.markStaticBakeStale("Tone-curve appearance changed");
         this.state.toneCurve = normalizeToneCurveState(this.state.toneCurve);
         const item = this.getSelectedItem();
         if (item) {
@@ -5316,6 +6745,7 @@ function startSparkViewer() {
       }
 
       applySelectedExposure(updateChip = true, syncInput = true) {
+        this.markStaticBakeStale("Selected exposure changed");
         const exposure = clampNumber(this.state.selectedExposure, EXPOSURE_LIMITS);
         this.state.selectedExposure = exposure;
         if (this.dom.selectedExposureRange) {
@@ -5540,7 +6970,7 @@ function startSparkViewer() {
         const preset = QUALITY[presetKey] || QUALITY.balanced;
         this.state.quality = presetKey in QUALITY ? presetKey : "balanced";
         this.spark.maxStdDev = preset.maxStdDev;
-        this.renderer.setPixelRatio(Math.min(window.devicePixelRatio || 1, preset.maxPixelRatio));
+        this.syncRendererPixelRatio();
         this.dom.qualitySelect.value = this.state.quality;
         this.onResize();
       }
@@ -5608,6 +7038,7 @@ function startSparkViewer() {
 
       applyTransformFromInputs(announce, commit = false) {
         const selectedItem = this.getSelectedItem();
+        if (selectedItem) this.markStaticBakeStale("Splat transform changed");
         const rotationXRaw = this.dom.rotationXInput.value.trim();
         const rotationYRaw = this.dom.rotationYInput.value.trim();
         const rotationZRaw = this.dom.rotationZInput.value.trim();
@@ -5667,6 +7098,8 @@ function startSparkViewer() {
         );
         this.rotationPivot.scale.setScalar(this.state.scale);
         this.rotationPivot.updateMatrixWorld(true);
+        this.syncAlignUi();
+        this.invalidateLightOcclusion("Splat transform changed");
         if (commit) {
           this.syncTransformInputs();
         }
@@ -5680,6 +7113,10 @@ function startSparkViewer() {
           return;
         }
         this.syncVisibleSceneItemTransforms();
+        if (!commit) this.syncActiveBackendItemTransforms();
+        if (commit) {
+          this.refreshActiveBackendSnapshot("Transform updated");
+        }
         if (commit) {
           this.finishDeferredInteraction();
         } else {
@@ -5713,6 +7150,7 @@ function startSparkViewer() {
         if (!item) {
           return;
         }
+        this.releaseLightOcclusion(item);
         if (item.mesh) {
           item.rotationPivot.remove(item.mesh);
           item.mesh.dispose();
@@ -5757,16 +7195,25 @@ function startSparkViewer() {
         this.syncTransformGizmo();
         this.syncSceneList();
         this.refreshLightingModel();
+        this.refreshActiveBackendSnapshot("Visibility updated");
         this.updateStatus(`${item.modelMeta.name} ${item.visible ? "shown" : "hidden"}`);
         this.forceVisualRefresh(4);
       }
 
       removeSceneItem(itemId) {
+        if (this.staticBakeApplied || this.staticBakeApplying) {
+          if (this.staticBakeApplying) this.markStaticBakeStale("Scene removal requested");
+          this.updateStatus("Clear / Restore the static bake before removing splats");
+          return;
+        }
         const index = this.sceneItems.findIndex((entry) => entry.id === itemId);
         if (index < 0) {
           return;
         }
         const [item] = this.sceneItems.splice(index, 1);
+        if (item.id === this.activeAnimationTargetItemId) {
+          this.clearAnimationScript(false);
+        }
         this.removePickedColorsForItem(item.id);
         const wasSelected = item.id === this.selectedSceneItemId;
         this.disposeSceneItem(item);
@@ -5782,6 +7229,7 @@ function startSparkViewer() {
         this.updateCameraClipping();
         this.syncTransformGizmo();
         this.refreshLightingModel({ forceModifierRebuild: true });
+        this.refreshActiveBackendSnapshot("Scene item removed");
         this.updateMetaUi();
         this.updateStatus(`Removed ${item.modelMeta.name}`);
         if (!this.sceneItems.length) {
@@ -5797,8 +7245,19 @@ function startSparkViewer() {
       }
 
       clearScene() {
+        if (this.staticBakeApplied || this.staticBakeApplying) {
+          if (this.staticBakeApplying) this.markStaticBakeStale("Scene clear requested");
+          this.updateStatus("Clear / Restore the static bake before clearing the scene");
+          return;
+        }
+        // A clear also cancels pending additive loads, so a late decoder
+        // cannot silently repopulate the scene after it has been cleared.
+        this.sceneLoadEpoch += 1;
+        this.loadToken += 1;
+        this.clearAnimationScript(false);
         this.sceneItems.forEach((item) => this.disposeSceneItem(item));
         this.sceneItems = [];
+        this.syncAlignUi();
         this.sceneLights.forEach((light) => {
           this.lightSceneRoot.remove(light.root);
           light.root.traverse?.((child) => {
@@ -5823,8 +7282,17 @@ function startSparkViewer() {
         this.refreshHelpers();
         this.syncLightList();
         this.refreshLightingModel({ forceModifierRebuild: true });
+        this.refreshActiveBackendSnapshot("Scene cleared");
         this.renderPickedColors();
         this.forceVisualRefresh(3);
+      }
+
+      confirmClearScene() {
+        const splatCount = this.sceneItems.length;
+        const lightCount = this.sceneLights.length;
+        const splatLabel = `${splatCount} splat${splatCount === 1 ? "" : "s"}`;
+        const lightLabel = `${lightCount} light${lightCount === 1 ? "" : "s"}`;
+        return window.confirm(`Clear Scene?\n\nRemove ${splatLabel} and ${lightLabel}.`);
       }
 
       clearLoadedSplat() {
@@ -5885,58 +7353,121 @@ function startSparkViewer() {
         return { buffer: merged.buffer, bytes: loadedBytes };
       }
 
+      enqueueSceneLoad(load) {
+        const epoch = this.sceneLoadEpoch;
+        const request = this.sceneLoadQueue.then(() => {
+          if (epoch !== this.sceneLoadEpoch) return false;
+          return load(++this.loadToken);
+        });
+        // A failed request must not poison subsequent additive requests.
+        this.sceneLoadQueue = request.catch(() => false);
+        return request;
+      }
+
       async loadFromFile(file) {
         if (!isSupportedFile(file)) {
           this.updateStatus(`Unsupported file type: ${file.name}`);
-          return;
+          return false;
         }
-        this.setProgress(`Reading ${file.name}`, null);
-        const arrayBuffer = await file.arrayBuffer();
-        await this.loadMesh({
-          bytes: arrayBuffer.byteLength,
-          fileBytes: arrayBuffer,
-          fileName: file.name,
-          fileType: detectSplatFileType(file.name),
-          source: "Local file",
+        return this.enqueueSceneLoad(async (requestToken) => {
+          try {
+            this.setProgress(`Reading ${file.name}`, null);
+            const arrayBuffer = await file.arrayBuffer();
+            return this.loadMesh({
+              bytes: arrayBuffer.byteLength,
+              fileBytes: arrayBuffer,
+              fileName: file.name,
+              fileType: detectSplatFileType(file.name),
+              loadToken: requestToken,
+              source: "Local file",
+            });
+          } catch (error) {
+            if (requestToken !== this.loadToken) return false;
+            const reason = error instanceof Error ? error.message : "The file could not be read";
+            this.updateStatus(`Could not read ${file.name}: ${reason}`);
+            this.updateRenderChip("Error");
+            this.setProgress("Load failed", 0);
+            if (!this.sceneItems.length) {
+              this.showEmptyState();
+            }
+            return false;
+          }
         });
       }
 
+      async loadFromFiles(files) {
+        const epoch = this.sceneLoadEpoch;
+        const droppedFiles = Array.from(files || []);
+        const supportedFiles = droppedFiles.filter((file) => isSupportedFile(file));
+        const rejectedCount = droppedFiles.length - supportedFiles.length;
+        if (!supportedFiles.length) {
+          this.updateStatus("No supported splat files were found. Existing scene was kept.");
+          return { addedCount: 0, rejectedCount };
+        }
+
+        let addedCount = 0;
+        for (const file of supportedFiles) {
+          if (epoch !== this.sceneLoadEpoch) return { addedCount, canceled: true, rejectedCount };
+          if (await this.loadFromFile(file)) {
+            addedCount += 1;
+          }
+        }
+        if (epoch !== this.sceneLoadEpoch) return { addedCount, canceled: true, rejectedCount };
+
+        const failedCount = supportedFiles.length - addedCount;
+        const statusSuffix = [
+          rejectedCount
+            ? `Ignored ${rejectedCount} unsupported file${rejectedCount === 1 ? "" : "s"}.`
+            : "",
+          failedCount
+            ? `${failedCount} supported file${failedCount === 1 ? "" : "s"} could not be added.`
+            : "",
+        ].filter(Boolean).join(" ");
+        if (addedCount) {
+          this.updateStatus(`Added ${addedCount} splat file${addedCount === 1 ? "" : "s"} to the scene. ${statusSuffix}`.trim());
+        } else {
+          this.updateStatus(`No splat files were added. ${statusSuffix}`.trim());
+        }
+        return { addedCount, failedCount, rejectedCount };
+      }
+
       async loadFromUrl(url, fileName, source) {
-        const { buffer, bytes } = await this.fetchArrayBufferWithProgress(url, fileName);
-        await this.loadMesh({
-          bytes,
-          fileBytes: buffer,
-          fileName,
-          fileType: detectSplatFileType(fileName),
-          source,
+        return this.enqueueSceneLoad(async (requestToken) => {
+          const { buffer, bytes } = await this.fetchArrayBufferWithProgress(url, fileName);
+          return this.loadMesh({
+            bytes,
+            fileBytes: buffer,
+            fileName,
+            fileType: detectSplatFileType(fileName),
+            loadToken: requestToken,
+            source,
+          });
         });
       }
 
       async loadPrimitive(kind) {
-        const requestToken = ++this.loadToken;
-        try {
-          const spec = await createPrimitiveSpec(kind);
-          if (requestToken !== this.loadToken) {
-            return;
+        return this.enqueueSceneLoad(async (requestToken) => {
+          try {
+            const spec = await createPrimitiveSpec(kind);
+            if (requestToken !== this.loadToken) return false;
+            return await this.loadMesh({
+              bytes: spec.bytes,
+              fileBytes: spec.buffer,
+              fileName: spec.name,
+              fileType: SplatFileType.PLY,
+              loadToken: requestToken,
+              localBounds: spec.localBounds,
+              primitiveMeta: spec,
+              source: spec.source,
+            });
+          } catch (error) {
+            if (requestToken !== this.loadToken) return false;
+            this.updateStatus(error instanceof Error ? error.message : "Primitive load failed");
+            this.updateRenderChip("Error");
+            this.setProgress("Load failed", 0);
+            return false;
           }
-          await this.loadMesh({
-            bytes: spec.bytes,
-            fileBytes: spec.buffer,
-            fileName: spec.name,
-            fileType: SplatFileType.PLY,
-            loadToken: requestToken,
-            localBounds: spec.localBounds,
-            primitiveMeta: spec,
-            source: spec.source,
-          });
-        } catch (error) {
-          if (requestToken !== this.loadToken) {
-            return;
-          }
-          this.updateStatus(error instanceof Error ? error.message : "Primitive load failed");
-          this.updateRenderChip("Error");
-          this.setProgress("Load failed", 0);
-        }
+        });
       }
 
       async loadMesh({
@@ -5950,6 +7481,7 @@ function startSparkViewer() {
         source,
       }) {
         const token = loadToken ?? ++this.loadToken;
+        if (token !== this.loadToken) return false;
         const hadSceneItems = this.sceneItems.length > 0;
         const startedAt = performance.now();
         this.updateStatus(`Loading ${fileName}...`);
@@ -5959,10 +7491,10 @@ function startSparkViewer() {
         let mesh = null;
         try {
           mesh = new SplatMesh({
-            ...buildSplatMeshLoadOptions(this.state.autoLodEnabled),
             fileBytes,
             fileType,
           });
+          mesh.enableLod = false;
           mesh.name = fileName;
           if (primitiveMeta) {
             mesh.maxShDegree = primitiveMeta.shDegree;
@@ -5984,6 +7516,18 @@ function startSparkViewer() {
             sceneItem.settings.falloff = primitiveMeta.defaultSettings.falloff ?? sceneItem.settings.falloff;
           }
           sceneItem.hoverEntries = primitiveMeta?.hoverEntries ?? null;
+          const authoredSplatEntries = Array.isArray(primitiveMeta?.authoredSplats)
+            ? primitiveMeta.authoredSplats
+            : (Array.isArray(primitiveMeta?.splats) ? primitiveMeta.splats : null);
+          sceneItem.hasAuthoredSplatNormals = Boolean(
+            authoredSplatEntries?.length && authoredSplatEntries[0]?.normal,
+          );
+          sceneItem.authoredNormalEntries = sceneItem.hasAuthoredSplatNormals
+            ? authoredSplatEntries
+            : null;
+          sceneItem.authoredBounceMaterialEntries = sceneItem.hasAuthoredSplatNormals
+            ? authoredSplatEntries
+            : null;
           sceneItem.baseObjectModifier = mesh.objectModifier;
           sceneItem.baseWorldModifier = mesh.worldModifier;
           mesh.userData.sceneItemId = sceneItem.id;
@@ -5991,6 +7535,7 @@ function startSparkViewer() {
           this.selectedSceneItemId = sceneItem.id;
           this.selectedLightId = null;
           this.syncSelectionRefs(sceneItem);
+          this.syncAnimationControls(true);
 
           this.depthRangeIsAuto = true;
           let meshLocalBounds;
@@ -6039,10 +7584,12 @@ function startSparkViewer() {
           this.updateMetaUi();
           this.syncSceneList();
           this.syncLightList();
+          this.refreshActiveBackendSnapshot("Splat loaded");
           this.setProgress("Ready", 1);
           this.updateRenderChip("Ready");
           this.updateStatus(`Loaded ${fileName}`);
           this.schedulePostLoadRefresh();
+          return true;
         } catch (error) {
           this.updateStatus(error instanceof Error ? error.message : "Load failed");
           this.updateRenderChip("Error");
@@ -6050,7 +7597,11 @@ function startSparkViewer() {
           if (mesh) {
             mesh.dispose();
           }
+          if (!this.sceneItems.length) {
+            this.showEmptyState();
+          }
           this.forceVisualRefresh(3);
+          return false;
         }
       }
 
@@ -6264,6 +7815,19 @@ function startSparkViewer() {
         this.dom.appShell?.classList.add("is-empty");
         this.dom.emptyState.hidden = false;
         this.dom.dropOverlay.hidden = true;
+        this.syncOpenFileAction();
+      }
+
+      syncOpenFileAction() {
+        const hasSceneItems = this.sceneItems.length > 0;
+        const hasClearableContent = hasSceneItems || this.sceneLights.length > 0;
+        if (this.dom.headerOpenFileButton) {
+          this.dom.headerOpenFileButton.hidden = !hasSceneItems;
+          this.dom.headerOpenFileButton.textContent = "Add File";
+        }
+        if (this.dom.clearSceneButton) {
+          this.dom.clearSceneButton.disabled = !hasClearableContent;
+        }
       }
 
       focusPick(event) {
@@ -6410,9 +7974,36 @@ function startSparkViewer() {
         this.setHoverChip(itemText, colorText);
       }
 
+      getSupportedDropFiles(files) {
+        return Array.from(files || []).filter((file) => isSupportedFile(file));
+      }
+
+      updateDropOverlay(files, totalCount = 0) {
+        const supportedCount = files.length;
+        const rejectedCount = Math.max(0, totalCount - supportedCount);
+        if (this.dom.dropOverlayMessage) {
+          if (supportedCount) {
+            const rejectedHint = rejectedCount
+              ? ` ${rejectedCount} unsupported file${rejectedCount === 1 ? "" : "s"} will be ignored.`
+              : "";
+            this.dom.dropOverlayMessage.textContent = `Drop to add ${supportedCount} splat file${supportedCount === 1 ? "" : "s"} to the scene.${rejectedHint}`;
+          } else {
+            this.dom.dropOverlayMessage.textContent = "Drop .ply, .spz, .splat, or .ksplat files to add them. Existing splats stay.";
+          }
+        }
+        this.dom.dropOverlay.hidden = false;
+      }
+
       onDrag(event) {
         event.preventDefault();
-        this.dom.dropOverlay.hidden = false;
+        const dataTransfer = event.dataTransfer;
+        const files = this.getSupportedDropFiles(dataTransfer?.files);
+        const hasFilePayload = files.length || Array.from(dataTransfer?.types || []).includes("Files");
+        if (!hasFilePayload) {
+          this.dom.dropOverlay.hidden = true;
+          return;
+        }
+        this.updateDropOverlay(files, dataTransfer?.files?.length || 0);
       }
 
       onDragLeave(event) {
@@ -6426,12 +8017,7 @@ function startSparkViewer() {
       async onDrop(event) {
         event.preventDefault();
         this.dom.dropOverlay.hidden = true;
-        const file = Array.from(event.dataTransfer?.files || []).find((entry) => isSupportedFile(entry));
-        if (!file) {
-          this.updateStatus("No supported splat file was found in the drop payload.");
-          return;
-        }
-        await this.loadFromFile(file);
+        await this.loadFromFiles(event.dataTransfer?.files);
       }
 
       onResize() {
@@ -6443,6 +8029,7 @@ function startSparkViewer() {
         this.camera.aspect = width / height;
         this.camera.updateProjectionMatrix();
         this.renderer.setSize(width, height, false);
+        this.renderActiveBackendFrame();
         this.invalidateRender();
       }
 
@@ -6531,11 +8118,10 @@ function startSparkViewer() {
 
       renderLoop() {
         const frameStartedAt = performance.now();
-        this.syncLodUi();
         const delta = Math.min(this.clock.getDelta(), 0.05);
-        let keepAnimating = false;
-        const animationActive = this.stepAnimation(delta);
-        const animationShouldRender = shouldRenderAnimationFrame(this.state);
+        let visualMotion = false;
+        const animationUpdated = this.stepAnimation(delta);
+        const animationPlaying = shouldRenderAnimationFrame(this.state);
         const movedByKeys = Boolean(this.firstPerson.update(delta));
         if (movedByKeys && this.activeMode === "orbit") {
           this.orbitControls.target.add(this.firstPerson.lastMovementDelta);
@@ -6545,33 +8131,40 @@ function startSparkViewer() {
         }
         if (this.activeMode === "orbit") {
           this.orbitControls.autoRotate = this.state.autoRotate;
-          keepAnimating = Boolean(this.orbitControls.enabled && this.orbitControls.update());
+          visualMotion = Boolean(this.orbitControls.enabled && this.orbitControls.update());
         } else {
-          keepAnimating = movedByKeys;
+          visualMotion = movedByKeys;
         }
-        keepAnimating = keepAnimating || movedByKeys || animationActive || animationShouldRender;
+        visualMotion = visualMotion || movedByKeys || animationUpdated;
+        const keepAnimating = visualMotion || animationPlaying;
         const timedRenderActive = this.isTimedRenderActive(frameStartedAt);
         const scheduledReady = !this.scheduledRenderAt || frameStartedAt >= this.scheduledRenderAt;
         const shouldDraw = (this.renderInvalidated && scheduledReady)
-          || keepAnimating
+          || visualMotion
           || this.pendingForcedFrames > 0
           || timedRenderActive;
         if (!shouldDraw) {
-          return;
+          return Boolean(this.renderInvalidated && !scheduledReady);
         }
         this.syncVisibleSceneItemTransforms();
         const frameDelay = this.getRenderFrameDelay(frameStartedAt);
         const canDrawNow = frameDelay <= 1
           || (this.renderInvalidated && scheduledReady)
-          || keepAnimating
+          || visualMotion
           || this.pendingForcedFrames > 0;
         if (shouldDraw && canDrawNow) {
           this.flushRenderNow();
         }
+        return keepAnimating
+          || this.pendingForcedFrames > 0
+          || this.renderInvalidated
+          || Boolean(this.scheduledRenderAt)
+          || this.isTimedRenderActive();
       }
 
       resetTransform() {
         const selectedItem = this.getSelectedItem();
+        if (selectedItem) this.markStaticBakeStale("Splat transform reset");
         this.state.rotationX = 0;
         this.state.rotationY = 0;
         this.state.rotationZ = 0;
@@ -6607,6 +8200,7 @@ function startSparkViewer() {
           this.updateCameraClipping();
         }
         this.queueSparkSceneUpdate();
+        this.refreshActiveBackendSnapshot("Transform reset");
         this.updateStatus("Reset splat transform");
         this.updateRenderChip("Transform reset");
         this.forceVisualRefresh(3);
@@ -6669,7 +8263,9 @@ function startSparkViewer() {
       shouldAttachAnimationModifier() {
         return Boolean(
           this.activeAnimationModifier
+          && this.isSparkAnimationAvailable()
           && this.state.animationApplied
+          && this.getActiveAnimationTargetItem()
           && (this.state.animationPlaying || this.state.animationTime > 0),
         );
       }
@@ -6688,11 +8284,11 @@ function startSparkViewer() {
           if (item.baseObjectModifier) {
             objectModifiers.push(item.baseObjectModifier);
           }
-          if (animationModifier) {
+          if (animationModifier && item.id === this.activeAnimationTargetItemId) {
             objectModifiers.push(animationModifier);
           }
           item.mesh.enableWorldToView = false;
-          item.mesh.enableLod = !animationModifier;
+          item.mesh.enableLod = false;
           item.mesh.objectModifiers = objectModifiers.length ? objectModifiers : undefined;
           item.mesh.covObjectModifiers = item.mesh.objectModifiers;
           item.mesh.worldModifier = undefined;
@@ -6705,17 +8301,30 @@ function startSparkViewer() {
             if (item.baseWorldModifier) {
               worldModifiers.push(item.baseWorldModifier);
             }
-            if (this.activeLightCount > 0) {
+            if (this.activeLightCount > 0 && !this.staticBakeApplied) {
               worldModifiers.push(createPointLightColorModifier({
+                cameraPosition: this.lightHandles.cameraPosition,
+                faceForwardToCamera: !item.hasAuthoredSplatNormals,
                 lightColorB: this.lightHandles.colorB,
                 lightColorG: this.lightHandles.colorG,
                 lightColorR: this.lightHandles.colorR,
                 lightCount: this.activeLightCount,
                 lightIntensities: this.lightHandles.intensities,
+                lightOccluderCount: this.activeOccluderCount,
+                lightOcclusionHandles: this.getLightOcclusionHandles(item),
                 lightPositions: this.lightHandles.positions,
+                occluderOpacities: this.lightHandles.occluderOpacities,
+                occluderPositions: this.lightHandles.occluderPositions,
+                occluderRadii: this.lightHandles.occluderRadii,
+                oneBounceFluxB: this.lightHandles.oneBounceFluxB,
+                oneBounceFluxG: this.lightHandles.oneBounceFluxG,
+                oneBounceFluxR: this.lightHandles.oneBounceFluxR,
+                oneBounceNormals: this.lightHandles.oneBounceNormals,
+                oneBouncePositions: this.lightHandles.oneBouncePositions,
+                oneBounceRadii: this.lightHandles.oneBounceRadii,
               }));
             }
-            if (item.id === this.selectedSceneItemId && !isNeutralToneCurve(item.settings.toneCurve)) {
+            if (!isNeutralToneCurve(item.settings.toneCurve)) {
               worldModifiers.push(createToneCurveColorModifier(item.settings.toneCurve));
             }
             item.mesh.worldModifiers = worldModifiers.length ? worldModifiers : undefined;
@@ -6802,7 +8411,6 @@ function startSparkViewer() {
           this.scheduleRender(this.idleRenderDelayMs);
           return;
         }
-        this.markRenderActivity();
         this.scheduleRender(0);
       }
 
@@ -6836,6 +8444,10 @@ function startSparkViewer() {
         this.dom.toggleAxesButton.classList.toggle("is-active", this.state.showAxes);
         this.dom.toggleBoundsButton.classList.toggle("is-active", this.state.showBounds);
         this.dom.toggleGridButton.classList.toggle("is-active", this.state.showGrid);
+        this.dom.toggleAutorotateButton.setAttribute("aria-pressed", String(this.state.autoRotate));
+        this.dom.toggleAxesButton.setAttribute("aria-pressed", String(this.state.showAxes));
+        this.dom.toggleBoundsButton.setAttribute("aria-pressed", String(this.state.showBounds));
+        this.dom.toggleGridButton.setAttribute("aria-pressed", String(this.state.showGrid));
       }
 
       updateCameraClipping(distanceHint) {
@@ -6881,27 +8493,8 @@ function startSparkViewer() {
         this.lastFpsUpdate = now;
       }
 
-      syncLodUi() {
-        if (this.dom.lodAutoCheckbox) {
-          this.dom.lodAutoCheckbox.checked = Boolean(this.state.autoLodEnabled);
-        }
-        if (this.dom.lodChip) {
-          const lodActive = detectLodAvailability(this.getSelectedItem()?.mesh);
-          this.dom.lodChip.textContent = buildLodChipLabel({
-            autoLodEnabled: this.state.autoLodEnabled,
-            lodActive,
-          });
-          this.dom.lodChip.classList.toggle("toolbar-button-primary", lodActive);
-        }
-      }
-
       updateMetaUi() {
         const center = this.centerBoundsSphere?.center ?? this.boundsSphere?.center ?? null;
-        const selectedItem = this.getSelectedItem();
-        const lodActive = detectLodAvailability(selectedItem?.mesh);
-        if (this.dom.infoItemName) {
-          this.dom.infoItemName.textContent = this.modelMeta.name;
-        }
         this.dom.infoName.textContent = this.modelMeta.name;
         this.dom.infoFormat.textContent = this.modelMeta.format;
         this.dom.infoSource.textContent = this.modelMeta.source;
@@ -6916,11 +8509,6 @@ function startSparkViewer() {
         this.dom.infoBounds.textContent = this.bounds
           ? formatVector(this.bounds.getSize(new THREE.Vector3()))
           : "-";
-        this.dom.infoAutoLod.textContent = this.state.autoLodEnabled ? "Enabled" : "Disabled";
-        this.dom.infoLoadMode.textContent = buildLodInfoLabel({
-          autoLodEnabled: this.state.autoLodEnabled,
-          lodActive,
-        });
         this.dom.infoScaleRange.textContent = this.modelMeta.scaleRange;
         this.dom.infoShDegree.textContent = this.modelMeta.shDegree;
         this.dom.infoShActive.textContent = this.modelMeta.activeSh;
@@ -6932,19 +8520,20 @@ function startSparkViewer() {
 
       updateModeUi() {
         this.dom.modeButtons.forEach((button) => {
-          button.classList.toggle("is-active", button.dataset.mode === this.activeMode);
+          const isActive = button.dataset.mode === this.activeMode;
+          button.classList.toggle("is-active", isActive);
+          button.setAttribute("aria-pressed", String(isActive));
         });
-        this.dom.modeDescription.title = CAMERA_MODE_TEXT[this.activeMode];
-        this.dom.modeDescription.setAttribute("aria-label", CAMERA_MODE_TEXT[this.activeMode]);
         this.dom.renderModeSelect.value = this.state.renderMode;
         this.updateNormalizeFieldState();
       }
 
       setAnimationOriginMode(mode) {
-        if (!this.activeAnimationScript) {
+        if (!this.activeAnimationScript || !this.isSparkAnimationAvailable() || !this.getSelectedItem()) {
           this.syncAnimationOriginControls();
           return;
         }
+        if (this.state.animationApplied) this.markStaticBakeStale("Animation origin changed");
         this.activeAnimationScript.originMode = mode === "manual" ? "manual" : "centroid";
         this.syncAnimationEditor();
         this.syncAnimationOriginControls();
@@ -6956,10 +8545,11 @@ function startSparkViewer() {
       }
 
       setAnimationOriginAxis(axis, value) {
-        if (!this.activeAnimationScript) {
+        if (!this.activeAnimationScript || !this.isSparkAnimationAvailable() || !this.getSelectedItem()) {
           this.syncAnimationOriginControls();
           return;
         }
+        if (this.state.animationApplied) this.markStaticBakeStale("Animation origin changed");
         this.activeAnimationScript.originMode = "manual";
         this.activeAnimationScript.origin[axis] = clampNumber(value, TRANSLATE_LIMITS);
         this.syncAnimationEditor();
@@ -6974,7 +8564,10 @@ function startSparkViewer() {
       syncAnimationOriginControls() {
         const script = this.activeAnimationScript;
         const originMode = script?.originMode === "manual" ? "manual" : "centroid";
-        const disabled = !script;
+        const selectedItem = this.getSelectedItem();
+        const target = this.getActiveAnimationTargetItem();
+        const disabled = !script || !this.isSparkAnimationAvailable() || !selectedItem
+          || (this.state.animationApplied && target?.id !== selectedItem.id);
         if (this.dom.animationOriginModeSelect) {
           this.dom.animationOriginModeSelect.value = originMode;
           this.dom.animationOriginModeSelect.disabled = disabled;
@@ -6996,11 +8589,16 @@ function startSparkViewer() {
         }
       }
 
-      syncAnimationEditor() {
+      syncAnimationEditor({ force = false } = {}) {
         if (this.dom.animationScriptEditor) {
-          this.dom.animationScriptEditor.value = this.activeAnimationScript
-            ? serializeAnimationScript(this.activeAnimationScript)
-            : "";
+          if (force || !this.animationEditorDirty) {
+            this.animationEditorDraft = this.activeAnimationScript
+              ? serializeAnimationScript(this.activeAnimationScript)
+              : "";
+            this.dom.animationScriptEditor.value = this.animationEditorDraft;
+            this.animationEditorDirty = false;
+          }
+          this.dom.animationScriptEditor.dataset.dirty = String(this.animationEditorDirty);
         }
         if (this.dom.animationPresetSelect) {
           this.dom.animationPresetSelect.value = this.activeAnimationScript?.preset || "explosion";
@@ -7013,41 +8611,111 @@ function startSparkViewer() {
         if (!this.dom.animationScriptStatus) {
           return;
         }
+        if (this.animationEditorDirty) {
+          this.dom.animationScriptStatus.textContent = this.isSparkAnimationAvailable()
+            ? "Script edits are preserved but not applied. Press Apply to use them."
+            : "Script edits are preserved. Switch to Spark, then press Apply.";
+          return;
+        }
+        if (!this.isSparkAnimationAvailable()) {
+          this.dom.animationScriptStatus.textContent = "Animation: Spark only. Switch to Spark to animate the selected item.";
+          return;
+        }
         if (!this.activeAnimationScript) {
-          this.dom.animationScriptStatus.textContent = "No animation script loaded. Use Splat Explosion, load a script, or keep animation off.";
+          this.dom.animationScriptStatus.textContent = "Load a preset or script, then apply it to the selected splat.";
+          return;
+        }
+        const target = this.getActiveAnimationTargetItem();
+        const selectedItem = this.getSelectedItem();
+        if (this.state.animationApplied && !target) {
+          this.dom.animationScriptStatus.textContent = "Animation target is no longer in the scene. Select an item and apply the script again.";
           return;
         }
         if (this.state.animationApplied && this.state.animationPlaying) {
-          this.dom.animationScriptStatus.textContent = `Playing ${this.activeAnimationScript.name}. Use Pause, Reset, or No Script to stop.`;
+          this.dom.animationScriptStatus.textContent = selectedItem?.id === target.id
+            ? `Playing ${this.activeAnimationScript.name} on ${target.modelMeta.name}. Pause, Reset, or Clear Script to stop.`
+            : `Playing ${this.activeAnimationScript.name} on ${target.modelMeta.name}. Select that item to control it.`;
           return;
         }
         if (this.state.animationApplied) {
-          this.dom.animationScriptStatus.textContent = `${this.activeAnimationScript.name} is applied. Press Play to animate the splats.`;
+          this.dom.animationScriptStatus.textContent = selectedItem?.id === target.id
+            ? `${this.activeAnimationScript.name} is applied to ${target.modelMeta.name}. Press Play to animate the selected item.`
+            : `${this.activeAnimationScript.name} is applied to ${target.modelMeta.name}. Select that item to control it.`;
           return;
         }
-        this.dom.animationScriptStatus.textContent = `${this.activeAnimationScript.name} is loaded. Apply the script to animate the splats.`;
+        this.dom.animationScriptStatus.textContent = `${this.activeAnimationScript.name} is loaded. Select an item and apply the script to animate it.`;
       }
 
       syncAnimationControls(syncSlider = true) {
         const duration = Math.max(this.state.animationDuration || this.activeAnimationScript?.duration || 0, 0);
+        const animationSupported = this.isSparkAnimationAvailable();
+        const target = this.getActiveAnimationTargetItem();
+        const selectedItem = this.getSelectedItem();
+        const targetIsSelected = !this.state.animationApplied || target?.id === selectedItem?.id;
+        const canEdit = Boolean(animationSupported && selectedItem && targetIsSelected);
+        const canPlay = Boolean(animationSupported && target && targetIsSelected && canPlayAnimation({
+          animationApplied: this.state.animationApplied,
+          hasModifier: Boolean(this.activeAnimationModifier),
+        }));
         this.state.animationDuration = duration;
+        if (this.dom.timelineContext) {
+          this.dom.timelineContext.textContent = !animationSupported
+            ? "Animation is available in Spark."
+            : !selectedItem
+              ? "Select a splat to animate."
+              : target
+                ? `${this.state.animationPlaying ? "Playing" : (target.id === selectedItem.id ? "Controlling" : "Active")} ${target.modelMeta.name}.`
+                : `Controls ${selectedItem.modelMeta.name}.`;
+        }
         if (this.dom.animationTimeRange) {
           this.dom.animationTimeRange.max = String(Math.max(duration, 0.01));
           if (syncSlider) {
             this.dom.animationTimeRange.value = String(Math.min(Math.max(this.state.animationTime, 0), Math.max(duration, 0.01)));
           }
+          this.dom.animationTimeRange.disabled = !canPlay;
         }
         if (this.dom.animationTimeLabel) {
           this.dom.animationTimeLabel.textContent = `${this.state.animationTime.toFixed(2)}s / ${duration.toFixed(2)}s`;
         }
         if (this.dom.animationLoopCheckbox) {
           this.dom.animationLoopCheckbox.checked = Boolean(this.state.animationLoop);
+          this.dom.animationLoopCheckbox.disabled = !canEdit || !this.activeAnimationScript;
         }
         if (this.dom.animationPlayButton) {
           this.dom.animationPlayButton.classList.toggle("is-active", this.state.animationPlaying);
+          this.dom.animationPlayButton.disabled = !canPlay;
         }
         if (this.dom.animationPauseButton) {
           this.dom.animationPauseButton.classList.toggle("is-active", !this.state.animationPlaying);
+          this.dom.animationPauseButton.disabled = !animationSupported || !target || !targetIsSelected || !this.state.animationPlaying;
+        }
+        if (this.dom.animationResetButton) {
+          this.dom.animationResetButton.disabled = !animationSupported || !target || !targetIsSelected || !this.state.animationApplied;
+        }
+        [
+          this.dom.animationApplyButton,
+          this.dom.animationLoadPresetButton,
+          this.dom.animationOpenButton,
+          this.dom.animationPresetSelect,
+          this.dom.animationSaveButton,
+          this.dom.animationScriptEditor,
+        ].forEach((control) => {
+          if (control) control.disabled = !canEdit;
+        });
+        if (this.dom.animationCopyDefaultButton) {
+          this.dom.animationCopyDefaultButton.disabled = !animationSupported || !this.activeAnimationScript;
+        }
+        this.syncTimelineToggle();
+        this.syncAnimationScriptStatus();
+      }
+
+      syncAnimationPlaybackUi() {
+        const duration = Math.max(this.state.animationDuration || this.activeAnimationScript?.duration || 0, 0);
+        if (this.dom.animationTimeRange) {
+          this.dom.animationTimeRange.value = String(Math.min(Math.max(this.state.animationTime, 0), Math.max(duration, 0.01)));
+        }
+        if (this.dom.animationTimeLabel) {
+          this.dom.animationTimeLabel.textContent = `${this.state.animationTime.toFixed(2)}s / ${duration.toFixed(2)}s`;
         }
       }
 
@@ -7056,13 +8724,13 @@ function startSparkViewer() {
           return new THREE.Vector3();
         }
         if (script.originMode === "centroid") {
-          return (this.centerBoundsSphere?.center ?? this.boundsSphere?.center ?? this.sceneBoundsSphere?.center ?? new THREE.Vector3()).clone();
+          return this.getActiveAnimationTargetItem()?.baseCenterBounds?.getCenter(new THREE.Vector3()) ?? new THREE.Vector3();
         }
         return new THREE.Vector3(script.origin.x, script.origin.y, script.origin.z);
       }
 
       applyActiveAnimationUniforms() {
-        if (!this.activeAnimationScript) {
+        if (!this.activeAnimationScript || !this.isSparkAnimationAvailable() || !this.getActiveAnimationTargetItem()) {
           return;
         }
         const { params } = this.activeAnimationScript;
@@ -7078,12 +8746,16 @@ function startSparkViewer() {
       }
 
       clearAnimationScript(announce = false) {
+        if (this.state.animationApplied || this.activeAnimationModifier) this.markStaticBakeStale("Animation modifier cleared");
         this.activeAnimationScript = null;
         this.activeAnimationModifier = null;
+        this.activeAnimationTargetItemId = null;
         Object.assign(this.state, createDefaultAnimationPlaybackState(null));
+        this.pendingAnimationDelta = 0;
         this.animationModifierHandles.time.value = 0;
-        this.syncAnimationEditor();
+        this.syncAnimationEditor({ force: true });
         this.syncAnimationControls(true);
+        this.syncStaticBakeUi();
         this.applyRenderMode(false);
         this.forceVisualRefresh(2);
         this.queueSparkSceneUpdate();
@@ -7094,16 +8766,24 @@ function startSparkViewer() {
       }
 
       loadAnimationPreset(name) {
+        if (!this.isSparkAnimationAvailable() || !this.getSelectedItem()) {
+          this.syncAnimationControls(true);
+          this.syncAnimationScriptStatus();
+          return;
+        }
         try {
           this.activeAnimationScript = parseAnimationScript(getAnimationPresetScriptText(name));
           this.activeAnimationModifier = null;
+          this.activeAnimationTargetItemId = null;
           this.state.animationApplied = false;
           this.state.animationLoop = this.activeAnimationScript.loop;
           this.state.animationDuration = this.activeAnimationScript.duration;
           this.state.animationPlaying = false;
           this.state.animationTime = 0;
-          this.syncAnimationEditor();
+          this.pendingAnimationDelta = 0;
+          this.syncAnimationEditor({ force: true });
           this.syncAnimationControls(true);
+          this.syncStaticBakeUi();
           this.applyRenderMode(false);
           this.forceVisualRefresh(2);
           this.queueSparkSceneUpdate();
@@ -7114,6 +8794,20 @@ function startSparkViewer() {
       }
 
       applyAnimationScript(announce = true) {
+        if (!this.isSparkAnimationAvailable()) {
+          this.updateStatus("Animation: Spark only. Switch to Spark to apply animation.");
+          this.syncAnimationControls(true);
+          this.syncAnimationScriptStatus();
+          return;
+        }
+        const target = this.getSelectedItem();
+        if (!target) {
+          this.updateStatus("Select an item before applying animation.");
+          this.syncAnimationControls(true);
+          this.syncAnimationScriptStatus();
+          return;
+        }
+        this.markStaticBakeStale("Animation modifier applied");
         try {
           const text = this.dom.animationScriptEditor?.value?.trim() || "";
           if (!text) {
@@ -7121,28 +8815,36 @@ function startSparkViewer() {
             return;
           }
           this.activeAnimationScript = parseAnimationScript(text);
+          this.activeAnimationTargetItemId = target.id;
           this.state.animationLoop = this.activeAnimationScript.loop;
           this.state.animationDuration = this.activeAnimationScript.duration;
-          this.state.animationTime = Math.min(this.state.animationTime, this.state.animationDuration);
+          this.state.animationTime = 0;
+          this.state.animationPlaying = false;
+          this.pendingAnimationDelta = 0;
           this.state.animationApplied = true;
           this.applyActiveAnimationUniforms();
           this.activeAnimationModifier = createAnimationModifierFromScript(this.activeAnimationScript, {
             dyno,
             handles: this.animationModifierHandles,
           });
-          this.syncAnimationEditor();
+          this.syncAnimationEditor({ force: true });
           this.syncAnimationControls(true);
+          this.syncStaticBakeUi();
           this.applyRenderMode(false);
           this.forceVisualRefresh(3);
           this.queueSparkSceneUpdate();
           if (announce) {
-            this.updateStatus(`Applied ${this.activeAnimationScript.name}`);
+            this.updateStatus(`Applied ${this.activeAnimationScript.name} to ${target.modelMeta.name}`);
             this.updateRenderChip(`${ANIMATION_PRESET_LABELS[this.activeAnimationScript.preset] || "Animation"} ready`);
           }
         } catch (error) {
           this.activeAnimationModifier = null;
+          this.activeAnimationTargetItemId = null;
           this.state.animationApplied = false;
           this.state.animationPlaying = false;
+          this.pendingAnimationDelta = 0;
+          this.syncAnimationControls(true);
+          this.syncStaticBakeUi();
           this.applyRenderMode(false);
           this.forceVisualRefresh(2);
           this.queueSparkSceneUpdate();
@@ -7154,47 +8856,49 @@ function startSparkViewer() {
       }
 
       stepAnimation(delta) {
-        if (!this.activeAnimationModifier || !this.state.animationApplied) {
+        if (!this.isSparkAnimationAvailable() || !this.getActiveAnimationTargetItem() || !this.activeAnimationModifier || !this.state.animationApplied) {
+          this.pendingAnimationDelta = 0;
           return false;
         }
         if (!this.state.animationPlaying) {
+          this.pendingAnimationDelta = 0;
           this.animationModifierHandles.time.value = this.state.animationTime;
           return false;
         }
-        const duration = Math.max(this.state.animationDuration || 0.1, 0.1);
-        let nextTime = this.state.animationTime + Math.max(delta, 0);
-        if (nextTime >= duration) {
-          if (this.state.animationLoop) {
-            nextTime %= duration;
-          } else {
-            nextTime = duration;
-            this.state.animationPlaying = false;
-          }
+        this.pendingAnimationDelta += Math.max(Number(delta) || 0, 0);
+        if (this.sparkSceneUpdatePromise) {
+          return false;
         }
-        this.state.animationTime = nextTime;
-        this.animationModifierHandles.time.value = nextTime;
-        this.syncAnimationControls(true);
-        this.syncAnimationScriptStatus();
-        this.invalidateRender();
-        this.forceVisualRefresh(1);
+        const animationDelta = this.pendingAnimationDelta;
+        this.pendingAnimationDelta = 0;
+        Object.assign(this.state, advanceAnimationPlayback(this.state, { delta: animationDelta }));
+        this.animationModifierHandles.time.value = this.state.animationTime;
+        this.syncAnimationPlaybackUi();
+        this.renderInvalidated = true;
         this.queueSparkSceneUpdate();
         if (!this.state.animationPlaying) {
+          this.syncAnimationControls(true);
           this.updateStatus(`Paused ${this.activeAnimationScript.name}`);
         }
         return true;
       }
 
       playAnimation() {
-        if (!canPlayAnimation({
+        if (!this.isSparkAnimationAvailable()) {
+          this.updateStatus("Animation: Spark only. Switch to Spark to play animation.");
+          return;
+        }
+        const target = this.getActiveAnimationTargetItem();
+        if (!target || target.id !== this.getSelectedItem()?.id || !canPlayAnimation({
           animationApplied: this.state.animationApplied,
           hasModifier: Boolean(this.activeAnimationModifier),
         })) {
           this.updateStatus("No animation script applied");
           return;
         }
-        this.state.animationPlaying = true;
-        this.lastAnimationTickAt = performance.now();
-        this.markRenderActivity(10_000);
+        this.markStaticBakeStale("Animation playback started");
+        this.pendingAnimationDelta = 0;
+        Object.assign(this.state, advanceAnimationPlayback(this.state, { start: true }));
         this.applyRenderMode(false);
         this.forceVisualRefresh(2);
         this.queueSparkSceneUpdate();
@@ -7203,17 +8907,30 @@ function startSparkViewer() {
         this.updateStatus(`Playing ${this.activeAnimationScript.name}`);
       }
 
-      pauseAnimation() {
+      pauseAnimation({ announce = true, allowUnsupported = false } = {}) {
+        if (!allowUnsupported && !this.isSparkAnimationAvailable()) {
+          this.syncAnimationControls(true);
+          this.syncAnimationScriptStatus();
+          return;
+        }
         this.state.animationPlaying = false;
+        this.pendingAnimationDelta = 0;
         this.applyRenderMode(false);
         this.syncAnimationControls(true);
         this.syncAnimationScriptStatus();
-        this.updateStatus(`Paused ${this.activeAnimationScript?.name || "animation"}`);
+        if (announce) this.updateStatus(`Paused ${this.activeAnimationScript?.name || "animation"}`);
       }
 
       resetAnimation() {
+        const target = this.getActiveAnimationTargetItem();
+        if (!this.isSparkAnimationAvailable() || !target || target.id !== this.getSelectedItem()?.id) {
+          this.syncAnimationControls(true);
+          this.syncAnimationScriptStatus();
+          return;
+        }
         this.pauseAnimation();
         this.state.animationTime = 0;
+        this.pendingAnimationDelta = 0;
         this.animationModifierHandles.time.value = 0;
         this.applyRenderMode(false);
         this.syncAnimationControls(true);
@@ -7224,15 +8941,16 @@ function startSparkViewer() {
       }
 
       setAnimationTimeFromUi(commit = false) {
-        if (!this.dom.animationTimeRange) {
+        const target = this.getActiveAnimationTargetItem();
+        if (!this.isSparkAnimationAvailable() || !target || target.id !== this.getSelectedItem()?.id || !this.dom.animationTimeRange) {
           return;
         }
         const duration = Math.max(this.state.animationDuration || 0, 0);
+        if (this.state.animationApplied) this.markStaticBakeStale("Animation time changed");
+        this.state.animationPlaying = false;
+        this.pendingAnimationDelta = 0;
         this.state.animationTime = THREE.MathUtils.clamp(Number(this.dom.animationTimeRange.value) || 0, 0, Math.max(duration, 0));
         this.animationModifierHandles.time.value = this.state.animationTime;
-        if (commit) {
-          this.state.animationPlaying = false;
-        }
         this.applyRenderMode(false);
         this.syncAnimationControls(true);
         this.syncAnimationScriptStatus();
@@ -7243,17 +8961,25 @@ function startSparkViewer() {
       }
 
       async loadAnimationScriptFile(file) {
+        if (!this.isSparkAnimationAvailable() || !this.getSelectedItem()) {
+          this.syncAnimationControls(true);
+          this.syncAnimationScriptStatus();
+          return;
+        }
         try {
           const text = await file.text();
           this.activeAnimationScript = parseAnimationScript(text);
           this.activeAnimationModifier = null;
+          this.activeAnimationTargetItemId = null;
           this.state.animationApplied = false;
           this.state.animationLoop = this.activeAnimationScript.loop;
           this.state.animationDuration = this.activeAnimationScript.duration;
           this.state.animationPlaying = false;
           this.state.animationTime = 0;
-          this.syncAnimationEditor();
+          this.pendingAnimationDelta = 0;
+          this.syncAnimationEditor({ force: true });
           this.syncAnimationControls(true);
+          this.syncStaticBakeUi();
           this.applyRenderMode(false);
           this.forceVisualRefresh(2);
           this.queueSparkSceneUpdate();
@@ -7279,6 +9005,7 @@ function startSparkViewer() {
 
       setInspectorTab(tab) {
         const nextTab = ["scene", "color", "light", "animation", "align", "brush", "info", "export"].includes(tab) ? tab : "scene";
+        const tabChanged = this.state.inspectorTab !== nextTab;
         this.state.inspectorTab = nextTab;
         this.syncInspectorTabs();
         if (nextTab === "align") {
@@ -7287,10 +9014,34 @@ function startSparkViewer() {
         if (nextTab === "brush") {
           this.syncBrushUi(true);
         }
+        // Start at the new panel's first control, not another tab's scroll offset.
+        if (tabChanged && this.dom.inspectorScroller) {
+          this.dom.inspectorScroller.scrollTop = 0;
+        }
         const label = nextTab === "scene"
           ? "Splats"
           : `${nextTab[0].toUpperCase()}${nextTab.slice(1)}`;
         this.updateRenderChip(`${label} tab`);
+      }
+
+      handleInspectorTabKeydown(event) {
+        const tabs = this.dom.inspectorTabButtons;
+        const currentIndex = tabs.indexOf(event.currentTarget);
+        if (currentIndex < 0) {
+          return;
+        }
+        let nextIndex = null;
+        if (event.key === "ArrowLeft") nextIndex = (currentIndex - 1 + tabs.length) % tabs.length;
+        if (event.key === "ArrowRight") nextIndex = (currentIndex + 1) % tabs.length;
+        if (event.key === "Home") nextIndex = 0;
+        if (event.key === "End") nextIndex = tabs.length - 1;
+        if (nextIndex == null) {
+          return;
+        }
+        event.preventDefault();
+        const nextTab = tabs[nextIndex];
+        this.setInspectorTab(nextTab.dataset.inspectorTab || "scene");
+        nextTab.focus();
       }
 
       syncInspectorTabs() {
@@ -7298,6 +9049,7 @@ function startSparkViewer() {
           const isActive = button.dataset.inspectorTab === this.state.inspectorTab;
           button.classList.toggle("is-active", isActive);
           button.setAttribute("aria-selected", String(isActive));
+          button.tabIndex = isActive ? 0 : -1;
         });
         this.dom.inspectorPanels.forEach((panel) => {
           const isActive = panel.dataset.inspectorPanel === this.state.inspectorTab;
@@ -7314,6 +9066,8 @@ function startSparkViewer() {
 
       updateStatus(message) {
         this.dom.statusLine.textContent = message;
+        this.dom.statusLine.title = message;
+        this.dom.statusLine.classList.toggle("is-error", /(?:error|failed|unavailable)/i.test(message));
       }
     }
 

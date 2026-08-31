@@ -4,11 +4,12 @@ import { readFile } from 'node:fs/promises';
 
 const source = await readFile(new URL('../viewer.js', import.meta.url), 'utf8');
 
-test('applyRenderMode keeps apply-only scripts visually idle and updates modifier pipelines consistently', () => {
+test('applyRenderMode keeps apply-only scripts visually idle, targets one item, and keeps LoD disabled', () => {
   assert.match(source, /shouldAttachAnimationModifier\(/);
   assert.match(source, /this\.state\.animationPlaying \|\| this\.state\.animationTime > 0/);
   assert.match(source, /const animationModifier = this\.shouldAttachAnimationModifier\(\) \? this\.activeAnimationModifier : null;/);
-  assert.match(source, /item\.mesh\.enableLod = !animationModifier;/);
+  assert.match(source, /animationModifier && item\.id === this\.activeAnimationTargetItemId/);
+  assert.match(source, /item\.mesh\.enableLod = false;/);
   assert.match(source, /item\.mesh\.covObjectModifiers = item\.mesh\.objectModifiers;/);
   assert.match(source, /item\.mesh\.covWorldModifiers = item\.mesh\.worldModifiers;/);
   assert.match(source, /this\.applyShLevel\(true\);/);
@@ -16,11 +17,11 @@ test('applyRenderMode keeps apply-only scripts visually idle and updates modifie
   assert.doesNotMatch(source, /\? \(item\.settings\.renderMode \|\| "beauty"\)/);
 });
 
-test('tone curve state is stored per scene item and applied only to the selected item', () => {
+test('tone curve edits target the selected item but stored grades remain active on every item', () => {
   assert.match(source, /settings:\s*\{[\s\S]*toneCurve:\s*buildToneCurveState\(\)/);
   assert.match(source, /this\.state\.toneCurve = normalizeToneCurveState\(item\?\.settings\?\.toneCurve \?\? buildToneCurveState\(\)\);/);
   assert.match(source, /item\.settings\.toneCurve = normalizeToneCurveState\(this\.state\.toneCurve\);/);
-  assert.match(source, /if \(item\.id === this\.selectedSceneItemId && !isNeutralToneCurve\(item\.settings\.toneCurve\)\)/);
+  assert.ok(/if \(!isNeutralToneCurve\(item\.settings\.toneCurve\)\)/.test(source), 'stored grades must not depend on selection');
   assert.match(source, /createToneCurveColorModifier\(item\.settings\.toneCurve\)/);
   assert.match(source, /const toneCurve = item\.settings\?\.toneCurve \?\? buildToneCurveState\(\);/);
   assert.doesNotMatch(source, /createToneCurveColorModifier\(this\.state\.toneCurve\)/);
@@ -52,9 +53,10 @@ test('exposure and tone-curve edits use deferred low-fps preview while inputs ar
 
 test('animation script status reflects loaded, applied, and playing states', () => {
   assert.match(source, /syncAnimationScriptStatus\(\) \{/);
-  assert.match(source, /No animation script loaded\. Use Splat Explosion, load a script, or keep animation off\./);
-  assert.match(source, /is applied\. Press Play to animate the splats\./);
-  assert.match(source, /Playing \$\{this\.activeAnimationScript\.name\}\. Use Pause, Reset, or No Script to stop\./);
+  assert.match(source, /Animation: Spark only\. Switch to Spark to animate the selected item\./);
+  assert.match(source, /Load a preset or script, then apply it to the selected splat\./);
+  assert.match(source, /is applied to \$\{target\.modelMeta\.name\}\. Press Play to animate the selected item/);
+  assert.match(source, /Playing \$\{this\.activeAnimationScript\.name\} on \$\{target\.modelMeta\.name\}/);
   assert.match(source, /playAnimation\(\)[\s\S]*this\.syncAnimationScriptStatus\(\);[\s\S]*this\.updateStatus\(`Playing/);
 });
 
@@ -82,14 +84,78 @@ test('brush editing exposes relative controls, z-depth limiting, and viewport ov
   assert.match(source, /brushUndoStack\.push\(\{ itemId: item\.id, changes \}\)/);
 });
 
-test('info panel metadata includes auto-lod and load-mode summaries', () => {
-  assert.match(source, /infoAutoLod: document\.getElementById\("info-auto-lod"\)/);
-  assert.match(source, /infoLoadMode: document\.getElementById\("info-load-mode"\)/);
-  assert.match(source, /this\.dom\.infoAutoLod\.textContent = this\.state\.autoLodEnabled \? "Enabled" : "Disabled";/);
-  assert.match(source, /this\.dom\.infoLoadMode\.textContent = buildLodInfoLabel\(\{/);
+test('alternate backends disable invisible viewport-only tools while keeping numeric edits available', () => {
+  assert.match(source, /isSparkViewportEditingAvailable\(\)/);
+  assert.match(source, /startAlignPointPick\(\)[\s\S]*?Switch to Spark to pick alignment points/);
+  assert.match(source, /syncTransformGizmo\(\)[\s\S]*?!this\.isSparkViewportEditingAvailable\(\)/);
+  assert.match(source, /toggleBrushEditing\(\)[\s\S]*?Switch to Spark to use the viewport brush/);
+  assert.match(source, /alignAddPointButton\.disabled = !viewportEditingAvailable/);
+  assert.match(source, /toggleGizmoButton\.disabled = !viewportEditingAvailable/);
 });
 
-test('Auto LoD starts disabled in the viewer state', () => {
-  assert.match(source, /autoLodEnabled:\s*false,/);
-  assert.doesNotMatch(source, /autoLodEnabled:\s*true,/);
+test('persistent LUT and brush writes invalidate bake state and refresh alternate snapshots once per operation', () => {
+  assert.match(source, /applyLoadedLutToSelectedSplat\(\)[\s\S]*?refreshActiveBackendSnapshot\("LUT applied"\)/);
+  assert.match(source, /applyBrushAtHit\([\s\S]*?markStaticBakeStale\("Brush geometry changed"\)/);
+  assert.match(source, /endBrushStroke\(\)[\s\S]*?refreshActiveBackendSnapshot\("Brush stroke completed"\)/);
+  assert.match(source, /undoLastBrushStroke\(\)[\s\S]*?markStaticBakeStale\("Brush undo changed geometry"\)[\s\S]*?refreshActiveBackendSnapshot\("Brush undo completed"\)/);
+});
+
+test('animation applies only to a selected target and uses target-local centroid coordinates', () => {
+  assert.match(source, /activeAnimationTargetItemId = target\.id/);
+  assert.match(source, /Select an item before applying animation\./);
+  assert.match(source, /getActiveAnimationTargetItem\(\)\?\.baseCenterBounds\?\.getCenter\(new THREE\.Vector3\(\)\)/);
+  assert.match(source, /activeAnimationTargetItemId = null;/);
+});
+
+test('a successful load re-enables selected-item animation controls after selection is synchronized', () => {
+  assert.match(source, /this\.syncSelectionRefs\(sceneItem\);\s*this\.syncAnimationControls\(true\);/);
+  assert.match(source, /syncAnimationControls\(syncSlider = true\)[\s\S]*this\.syncAnimationScriptStatus\(\);/);
+});
+
+test('non-Spark animation guards pause playback, disable controls, and stop scrub races', () => {
+  assert.match(source, /pauseAnimation\(\{ announce: false, allowUnsupported: true \}\)/);
+  assert.match(source, /Animation: Spark only/);
+  assert.match(source, /animationTimeRange\.disabled = !canPlay/);
+  assert.match(source, /this\.state\.animationPlaying = false;\s*this\.pendingAnimationDelta = 0;\s*this\.state\.animationTime = THREE\.MathUtils\.clamp/);
+  assert.match(source, /advanceAnimationPlayback\(this\.state, \{ start: true \}\)/);
+  assert.match(source, /advanceAnimationPlayback\(this\.state, \{ delta: animationDelta \}\)/);
+  assert.match(source, /clearAnimationScript\(announce = false\)[\s\S]*?syncStaticBakeUi\(\);/);
+  assert.match(source, /applyAnimationScript\(announce = true\)[\s\S]*?state\.animationApplied = true;[\s\S]*?syncStaticBakeUi\(\);/);
+});
+
+test('animation drafts, apply transitions, and playback UI avoid silent loss and per-frame live-region churn', () => {
+  assert.match(source, /animationScriptEditor\?\.addEventListener\("input"[\s\S]*?animationEditorDirty = true/);
+  assert.match(source, /syncAnimationEditor\(\{ force = false \} = \{\}\)[\s\S]*?if \(force \|\| !this\.animationEditorDirty\)/);
+  assert.match(source, /Script edits are preserved but not applied/);
+  assert.match(source, /applyAnimationScript\(announce = true\)[\s\S]*?state\.animationTime = 0;[\s\S]*?state\.animationPlaying = false;/);
+  assert.match(source, /catch \(error\) \{[\s\S]*?state\.animationPlaying = false;[\s\S]*?syncAnimationControls\(true\);/);
+  const step = source.match(/stepAnimation\(delta\) \{[\s\S]*?\n      \}/)?.[0] ?? '';
+  assert.match(step, /syncAnimationPlaybackUi\(\)/);
+  assert.doesNotMatch(step, /syncAnimationScriptStatus\(\)/);
+  assert.doesNotMatch(step, /syncAnimationControls\(true\);[\s\S]*?forceVisualRefresh\(1\)/);
+});
+
+test('animation playback backpressures Spark updates and only draws changed frames', () => {
+  const step = source.match(/stepAnimation\(delta\) \{[\s\S]*?\n      \}/)?.[0] ?? '';
+  const renderLoop = source.match(/renderLoop\(\) \{[\s\S]*?\n      \}/)?.[0] ?? '';
+
+  assert.match(step, /this\.pendingAnimationDelta \+= Math\.max\(Number\(delta\) \|\| 0, 0\)/);
+  assert.match(step, /if \(this\.sparkSceneUpdatePromise\) \{\s*return false;/);
+  assert.match(step, /delta: animationDelta/);
+  assert.match(step, /this\.renderInvalidated = true;\s*this\.queueSparkSceneUpdate\(\);/);
+  assert.doesNotMatch(step, /forceVisualRefresh/);
+  assert.match(renderLoop, /const animationUpdated = this\.stepAnimation\(delta\);/);
+  assert.match(renderLoop, /const animationPlaying = shouldRenderAnimationFrame\(this\.state\);/);
+  assert.match(renderLoop, /visualMotion = visualMotion \|\| movedByKeys \|\| animationUpdated;/);
+  assert.match(renderLoop, /const keepAnimating = visualMotion \|\| animationPlaying;/);
+  assert.doesNotMatch(renderLoop, /shouldDraw[\s\S]*?\|\| keepAnimating/);
+  assert.doesNotMatch(renderLoop, /canDrawNow[\s\S]*?\|\| keepAnimating/);
+});
+
+test('render scheduling stops its animation frame chain when the viewer is idle', () => {
+  assert.match(source, /this\.animationLoopHandle = 0;\s*if \(this\.renderLoop\(\)\) this\.animationLoopHandle = window\.requestAnimationFrame\(tick\);/);
+  assert.match(source, /renderLoop\(\)[\s\S]*?return keepAnimating[\s\S]*?this\.isTimedRenderActive\(\);/);
+  assert.doesNotMatch(source, /\["pointerdown", "pointermove", "keydown", "keyup", "wheel"\]/);
+  assert.match(source, /invalidateRender\(immediate = true\)[\s\S]*?this\.scheduleRender\(0\);/);
+  assert.doesNotMatch(source.match(/invalidateRender\(immediate = true\)[\s\S]*?\n      \}/)?.[0] ?? '', /markRenderActivity/);
 });

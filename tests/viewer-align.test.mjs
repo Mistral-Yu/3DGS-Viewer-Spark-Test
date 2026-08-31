@@ -132,7 +132,7 @@ test("align styles use a subtle status block and row-level destructive remove ac
   assert.match(viewerCss, /\.align-point-editors\s*{/);
   assert.match(viewerCss, /\.align-point-coordinate-field\s*{/);
   assert.match(viewerCss, /\.align-point-axis-label\s*{/);
-  assert.match(viewerCss, /\.align-point-remove-button\s*{[^}]*color:\s*#fca5a5/s);
+  assert.match(viewerCss, /\.toolbar-button\.align-point-remove-button\s*{[^}]*border-color:\s*#d98a95;[^}]*background:\s*#fff7f8;[^}]*color:\s*#a12538/s);
 });
 
 test("viewer wires align controls, editable points, reset, and applies results into splat transforms", () => {

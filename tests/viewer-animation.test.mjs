@@ -4,6 +4,7 @@ import assert from 'node:assert/strict';
 import {
   ANIMATION_PRESET_LIBRARY,
   DEFAULT_ANIMATION_SCRIPT_NAME,
+  advanceAnimationPlayback,
   buildAnimationDownloadName,
   canPlayAnimation,
   createDefaultAnimationPlaybackState,
@@ -271,6 +272,21 @@ test('shouldRenderAnimationFrame requires an applied script that is actively pla
   assert.equal(shouldRenderAnimationFrame({ animationApplied: false, animationPlaying: true }), false);
   assert.equal(shouldRenderAnimationFrame({ animationApplied: true, animationPlaying: false }), false);
   assert.equal(shouldRenderAnimationFrame({ animationApplied: true, animationPlaying: true }), true);
+});
+
+test('advanceAnimationPlayback loops, stops at the endpoint, and restarts non-loop playback from zero', () => {
+  assert.deepEqual(
+    advanceAnimationPlayback({ animationDuration: 3, animationLoop: true, animationPlaying: true, animationTime: 2.5 }, { delta: 1 }),
+    { animationPlaying: true, animationTime: 0.5 },
+  );
+  assert.deepEqual(
+    advanceAnimationPlayback({ animationDuration: 3, animationLoop: false, animationPlaying: true, animationTime: 2.5 }, { delta: 1 }),
+    { animationPlaying: false, animationTime: 3 },
+  );
+  assert.deepEqual(
+    advanceAnimationPlayback({ animationDuration: 3, animationLoop: false, animationPlaying: false, animationTime: 3 }, { start: true }),
+    { animationPlaying: true, animationTime: 0 },
+  );
 });
 
 test('canPlayAnimation requires an already applied modifier and does not auto-apply loaded scripts', () => {

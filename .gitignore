@@ -1,6 +1,14 @@
 node_modules/
 .playwright-cli/
 
+# Local credentials must never be published
+.env
+.env.*
+!.env.example
+*.pem
+*.p12
+*.pfx
+
 # Large local data
 models/
 *.ply
