@@ -1,12 +1,12 @@
 /**
- * Renderer-neutral scene data for Spatial LookDev Lab.
+ * Renderer-neutral scene data for 3DGS Scene Lab.
  *
  * This module is deliberately Spark-free. Spark is used by the host only to
  * decode loaded files through SplatMesh#forEachSplat; alternate renderers
  * receive copied, typed-array data and never touch a Spark render path.
  */
 
-export const LOOKDEV_LAB_NAME = "Spatial LookDev Lab";
+export const LOOKDEV_LAB_NAME = "3DGS Scene Lab";
 export const SH_C0 = 0.28209479177387814;
 
 export const RENDERER_MANIFEST = Object.freeze({

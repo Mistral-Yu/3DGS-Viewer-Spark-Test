@@ -383,7 +383,7 @@ test("only Cube and Macbeth source explicit authored bounce material", () => {
 });
 
 test("manifest advertises only implemented Gaussian capabilities", () => {
-  assert.equal(LOOKDEV_LAB_NAME, "Spatial LookDev Lab");
+  assert.equal(LOOKDEV_LAB_NAME, "3DGS Scene Lab");
   assert.deepEqual(Object.keys(RENDERER_MANIFEST), ["spark", "playcanvas", "three-r186"]);
   Object.values(RENDERER_MANIFEST).forEach((backend) => {
     assert.equal(backend.capabilities.gaussianRenderer, true);
@@ -615,7 +615,8 @@ test('vendor load failure leaves the current renderer and its snapshot untouched
 
 test("tool UI exposes one concise global backend selector before Camera", () => {
   const markup = read("index.html");
-  assert.match(markup, /<h1>Spatial LookDev Lab<\/h1>/);
+  assert.match(markup, /<h1>3DGS Scene Lab<\/h1>/);
+  assert.match(markup, /<title>3DGS Scene Lab<\/title>/);
   const leftPanel = markup.match(/<aside class="panel panel-left">([\s\S]*?)<\/aside>/)?.[1] ?? "";
   assert.match(leftPanel, /<section class="backend-panel backend-panel-workspace"[\s\S]*id="backend-select"[\s\S]*<h2>Camera<\/h2>/);
   assert.match(markup, /id="backend-select"/);
@@ -630,7 +631,10 @@ test("tool UI exposes one concise global backend selector before Camera", () => 
 
 test("package pins PlayCanvas and the exact HTTPS r186dev commit", () => {
   const packageJson = JSON.parse(read("package.json"));
-  assert.equal(packageJson.name, "spatial-lookdev-lab");
+  assert.equal(packageJson.name, "3dgs-scene-lab");
+  const lockfile = JSON.parse(read("package-lock.json"));
+  assert.equal(lockfile.name, packageJson.name);
+  assert.equal(lockfile.packages[""].name, packageJson.name);
   assert.equal(packageJson.dependencies.playcanvas, "2.21.2");
   assert.equal(
     packageJson.dependencies["three-r186"],
