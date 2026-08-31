@@ -27,6 +27,26 @@ scale, shear, and reflection. Covariance is packed once per snapshot or edited
 item, then reused for camera-depth sorting and GPU projection. The separate
 static-bake transform restrictions below still apply.
 
+## Color and PLY interchange
+
+- Untagged imported splats are treated as **sRGB**. Built-in primitives and
+  explicitly tagged legacy linear exports retain their Linear sRGB meaning.
+- Exposure, lighting, LUTs, and tone curves use Linear sRGB. Spark decodes after
+  source SH evaluation and encodes after grading; individual SH coefficients
+  are not passed through a nonlinear transfer function. Alternate backends
+  receive linear snapshots and encode once, with tone mapping disabled.
+- Display and PLY export use the exact sRGB transfer function, not gamma 2.2.
+  Native encoded-color Gaussian blending is retained for splat-viewer
+  compatibility; coverage, filtering, and sorting can still differ by backend.
+- Default **Export** writes sRGB SH0 appearance, including Spark exposure,
+  lighting, and grading. Alternate renderers export their ungraded snapshot.
+  Reopening this file starts from baked colors: do not reapply the same lighting
+  or grading. Match the external viewer's background, camera, and exposure.
+- Active animation, diagnostic modes, view-dependent SH, nonstandard falloff,
+  and opacity above 1 cannot currently be preserved by this SH0 exporter.
+  Save explains the required reset instead of silently exporting another look.
+  SH/falloff checkboxes record metadata only; they do not export SH1–SH3.
+
 ## Point-light occlusion
 
 In Spark, add a point light and enable **Light → Occlusion**. Every visible

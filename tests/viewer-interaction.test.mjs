@@ -249,3 +249,71 @@ test('export actions reflect loaded items and export selection instead of offeri
   check([{ mesh: {}, exportEnabled: true }], [false, true, false]);
   check([{ mesh: {}, exportEnabled: true }, { mesh: {}, exportEnabled: false }], [false, false, false]);
 });
+
+test('requesting an alignment point leaves brush mode before the next viewport click', () => {
+  const start = viewerMethod('startAlignPointPick', 'pickAlignPoint', {
+    formatAlignPointLabel: () => 'S1',
+  });
+  const viewer = {
+    brushEnabled: true, alignPickMode: false, isColorPickMode: true,
+    isSparkViewportEditingAvailable: () => true,
+    dom: { alignRoleSelect: { value: 'source' } }, alignPoints: { source: [] },
+    getAlignSelection: () => ({ modelMeta: { name: 'Cube' } }),
+    syncAlignUi() {}, updateStatus() {},
+    setViewportEditingMode(mode) {
+      this.brushEnabled = mode === 'brush';
+      this.alignPickMode = mode === 'align';
+      this.isColorPickMode = mode === 'color';
+    },
+  };
+  start.call(viewer);
+  assert.equal(viewer.brushEnabled, false);
+  assert.equal(viewer.isColorPickMode, false);
+  assert.equal(viewer.alignPickMode, true);
+});
+
+test('Brush, Align and Color picking are mutually exclusive and finish any pending stroke', () => {
+  const setMode = viewerMethod('setViewportEditingMode', 'getSplatLocalNormal');
+  for (const mode of ['brush', 'align', 'color', null]) {
+    const calls = [];
+    const viewer = {
+      brushEnabled: true, alignPickMode: true, isColorPickMode: true,
+      endBrushStroke() { calls.push('end'); },
+      syncBrushUi() { calls.push('brush'); },
+      syncAlignUi() { calls.push('align'); },
+      syncColorPickButton() { calls.push('color'); },
+    };
+    setMode.call(viewer, mode);
+    assert.deepEqual([viewer.brushEnabled, viewer.alignPickMode, viewer.isColorPickMode],
+      ['brush', 'align', 'color'].map((tool) => tool === mode));
+    assert.deepEqual(calls, ['end', 'brush', 'align', 'color']);
+  }
+  const color = viewerMethod('startColorPickMode', 'stopColorPickMode');
+  let requested = null;
+  color.call({ setViewportEditingMode(mode) { requested = mode; }, updateStatus() {} });
+  assert.equal(requested, 'color');
+  const brush = viewerMethod('toggleBrushEditing', 'getBrushPointer');
+  const viewer = {
+    brushEnabled: false, isSparkViewportEditingAvailable: () => true,
+    getSelectedItem: () => ({ mesh: {} }), getEditableSplatStorage: () => ({}),
+    setViewportEditingMode(mode) { requested = mode; this.brushEnabled = mode === 'brush'; }, updateStatus() {},
+  };
+  brush.call(viewer);
+  assert.equal(requested, 'brush');
+  brush.call(viewer);
+  assert.equal(requested, null);
+});
+
+test('leaving the viewport clears the readout and stale brush overlay without disabling the tool', () => {
+  const leave = viewerMethod('handleViewportPointerLeave', 'clearHoverReadout');
+  const calls = [];
+  const viewer = {
+    brushEnabled: true,
+    clearHoverReadout() { calls.push('readout'); },
+    hideBrushOverlay() { calls.push('overlay'); },
+  };
+  leave.call(viewer);
+  assert.deepEqual(calls, ['readout', 'overlay']);
+  assert.equal(viewer.brushEnabled, true);
+  assert.match(source, /addEventListener\("pointerleave", \(\) => this\.handleViewportPointerLeave\(\)\)/);
+});

@@ -1,3 +1,5 @@
+import { SPLAT_COLOR_SPACE, srgbToLinearChannel } from "./viewer-color.mjs";
+
 /**
  * Renderer-neutral scene data for 3DGS Scene Lab.
  *
@@ -66,10 +68,14 @@ const copyQuaternion = (target, offset, value) => {
   target[offset + 3] = finite(value?.w, 1);
 };
 
-const copyLinearRgb = (target, offset, value) => {
-  target[offset] = finite(value?.r ?? value?.x ?? value?.[0]);
-  target[offset + 1] = finite(value?.g ?? value?.y ?? value?.[1]);
-  target[offset + 2] = finite(value?.b ?? value?.z ?? value?.[2]);
+const copyLinearRgb = (target, offset, value, colorSpace) => {
+  const r = finite(value?.r ?? value?.x ?? value?.[0]);
+  const g = finite(value?.g ?? value?.y ?? value?.[1]);
+  const b = finite(value?.b ?? value?.z ?? value?.[2]);
+  const linear = colorSpace === SPLAT_COLOR_SPACE.LINEAR;
+  target[offset] = linear ? r : srgbToLinearChannel(r);
+  target[offset + 1] = linear ? g : srgbToLinearChannel(g);
+  target[offset + 2] = linear ? b : srgbToLinearChannel(b);
 };
 
 const copyAuthoredDiffuseAlbedo = (target, offset, value) => {
@@ -131,7 +137,7 @@ export function createSceneSnapshot(sceneItems = [], {
       copyVector3(center, slot * 3, splatCenter);
       copyVector3(scale, slot * 3, splatScale);
       if (quaternion) copyQuaternion(quaternion, slot * 4, splatQuaternion);
-      copyLinearRgb(linearRgb, slot * 3, splatColor);
+      copyLinearRgb(linearRgb, slot * 3, splatColor, sceneItem.sourceColorSpace);
       opacity[slot] = finite(splatOpacity, 1);
       sourceIndex[slot] = slot;
       const authoredNormal = authoredEntries[slot]?.normal;

@@ -48,6 +48,10 @@ import {
   selectOneBounceVpls,
 } from "./viewer-lighting.mjs";
 import { applyCubeLutToLinearRgb, parseCubeLut, summarizeCubeLut } from "./viewer-lut.mjs";
+import {
+  SPLAT_COLOR_SPACE, detectSplatColorSpace, sourceColorToLinear,
+  linearColorToSource, linearColorToSrgb,
+} from "./viewer-color.mjs";
 import { createSceneSnapshot, flattenVisibleSnapshot } from "./renderer-contract.mjs";
 import { LookDevBackendManager } from "./viewer-backends.mjs";
 import {
@@ -546,6 +550,28 @@ const LIGHT_SHADOW_GPU_SLOT_LIMIT = 32;
     const isIntermediateNumericInput = (value) =>
       value === "" || value === "-" || value === "." || value === "-." || value === "+";
 
+    const createSplatColorTransferModifier = (toLinear) =>
+      dynoBlock({ gsplat: Gsplat }, { gsplat: Gsplat }, ({ gsplat }) => {
+        const channels = split(splitGsplat(gsplat).outputs.rgb).outputs;
+        const transfer = (value) => {
+          const x = clamp(value, dynoConst("float", 0), dynoConst("float", 1));
+          return toLinear
+            ? select(
+              lessThan(x, dynoConst("float", 0.04045)),
+              div(x, dynoConst("float", 12.92)),
+              pow(div(add(x, dynoConst("float", 0.055)), dynoConst("float", 1.055)), dynoConst("float", 2.4)),
+            )
+            : select(
+              lessThan(x, dynoConst("float", 0.0031308)),
+              mul(x, dynoConst("float", 12.92)),
+              sub(mul(dynoConst("float", 1.055), pow(x, dynoConst("float", 1 / 2.4))), dynoConst("float", 0.055)),
+            );
+        };
+        return { gsplat: combineGsplat({
+          gsplat, r: transfer(channels.x), g: transfer(channels.y), b: transfer(channels.z),
+        }) };
+      });
+
     const createWorldNormalModifier = () =>
       dynoBlock({ gsplat: Gsplat }, { gsplat: Gsplat }, ({ gsplat }) => {
         if (!gsplat) {
@@ -972,7 +998,7 @@ const LIGHT_SHADOW_GPU_SLOT_LIMIT = 32;
     const SH_C0 = 0.28209479177387814;
 
     const alphaToOpacity = (alpha) => {
-      const clamped = THREE.MathUtils.clamp(alpha, 0.001, 0.999);
+      const clamped = THREE.MathUtils.clamp(alpha, 0.000001, 0.999999);
       return Math.log(clamped / (1 - clamped));
     };
 
@@ -991,7 +1017,8 @@ const LIGHT_SHADOW_GPU_SLOT_LIMIT = 32;
         .trim()
         .slice(0, 240);
 
-    const packGaussianPly = (splats, comments = []) => {
+    // Colors passed here are already encoded in the declared storage space.
+    const packGaussianPly = (splats, comments = [], colorSpace = SPLAT_COLOR_SPACE.SRGB) => {
       const commentLines = comments
         .map(sanitizePlyComment)
         .filter(Boolean)
@@ -999,6 +1026,7 @@ const LIGHT_SHADOW_GPU_SLOT_LIMIT = 32;
       const header = [
         "ply",
         "format binary_little_endian 1.0",
+        `comment color_space ${colorSpace}`,
         ...commentLines,
         `element vertex ${splats.length}`,
         "property float x",
@@ -1095,7 +1123,7 @@ const LIGHT_SHADOW_GPU_SLOT_LIMIT = 32;
         ...definition,
         authoredSplats: definition.splats,
         bytes: definition.splats.length * 17 * 4,
-        buffer: packGaussianPly(definition.splats),
+        buffer: packGaussianPly(definition.splats, [], SPLAT_COLOR_SPACE.LINEAR),
         hoverEntries,
         splats: definition.splats.length,
       };
@@ -1804,7 +1832,7 @@ const LIGHT_SHADOW_GPU_SLOT_LIMIT = 32;
         });
         window.addEventListener("pointerup", () => this.endBrushStroke());
         window.addEventListener("pointercancel", () => this.endBrushStroke());
-        this.renderer.domElement.addEventListener("pointerleave", () => this.clearHoverReadout());
+        this.renderer.domElement.addEventListener("pointerleave", () => this.handleViewportPointerLeave());
         this.renderer.domElement.addEventListener("wheel", (event) => this.handleStageWheel(event), { passive: false });
         this.invalidateRender();
 
@@ -3240,12 +3268,25 @@ const LIGHT_SHADOW_GPU_SLOT_LIMIT = 32;
         return records;
       }
 
-      applyStaticBakeColors(snapshot, linearRgb) {
+      captureStaticBakeSourceColors(snapshot) {
+        const rgb = new Float32Array(snapshot.count * 3);
+        for (let index = 0; index < snapshot.count; index += 1) {
+          const item = this.getSceneItemById(snapshot.itemIds[snapshot.itemIndex[index]]);
+          const splat = this.getEditableSplatStorage(item)?.getSplat?.(snapshot.sourceIndex[index]);
+          if (!splat) throw new Error("Could not preserve original splat colors");
+          rgb.set(toLinearRgbArray(splat.color ?? splat.rgb ?? splat.rgba), index * 3);
+        }
+        return rgb;
+      }
+
+      applyStaticBakeColors(snapshot, linearRgb, { sourceEncoded = false } = {}) {
         const writes = this.collectStaticBakeWrites(snapshot, linearRgb);
         const touchedItems = new Set();
         writes.forEach(({ center, item, opacity, outputIndex, quaternion, scales, sourceIndex, splats }) => {
           const offset = outputIndex * 3;
-          const color = new THREE.Color(linearRgb[offset], linearRgb[offset + 1], linearRgb[offset + 2]);
+          const rgb = [linearRgb[offset], linearRgb[offset + 1], linearRgb[offset + 2]];
+          const stored = sourceEncoded ? rgb : linearColorToSource(rgb, item.sourceColorSpace);
+          const color = new THREE.Color(...stored);
           splats.setSplat(
             sourceIndex,
             center,
@@ -3310,11 +3351,11 @@ const LIGHT_SHADOW_GPU_SLOT_LIMIT = 32;
           // Keep a recoverable original before the first public setter. If a
           // later setter/update fails, either rollback atomically or retain
           // this state so Clear / Restore can be retried without data loss.
-          this.staticBakeOriginalRgb = new Float32Array(snapshot.linearRgb);
+          this.staticBakeOriginalRgb = this.captureStaticBakeSourceColors(snapshot);
           this.staticBakeResultSnapshot = createStaticBakeRestoreHandle(snapshot);
           const transaction = runStaticBakeColorTransaction({
             applyBaked: () => this.applyStaticBakeColors(snapshot, result.bakedLinearRgb),
-            restoreOriginal: () => this.applyStaticBakeColors(snapshot, this.staticBakeOriginalRgb),
+            restoreOriginal: () => this.applyStaticBakeColors(snapshot, this.staticBakeOriginalRgb, { sourceEncoded: true }),
           });
           if (transaction.error) {
             if (transaction.rolledBack) {
@@ -3369,7 +3410,7 @@ const LIGHT_SHADOW_GPU_SLOT_LIMIT = 32;
       clearStaticBake() {
         if (!this.staticBakeApplied || !this.staticBakeResultSnapshot || !this.staticBakeOriginalRgb) return;
         try {
-          const restored = this.applyStaticBakeColors(this.staticBakeResultSnapshot, this.staticBakeOriginalRgb);
+          const restored = this.applyStaticBakeColors(this.staticBakeResultSnapshot, this.staticBakeOriginalRgb, { sourceEncoded: true });
           this.staticBakeApplied = false;
           this.staticBakeOriginalRgb = null;
           this.staticBakeResultSnapshot = null;
@@ -3704,8 +3745,7 @@ const LIGHT_SHADOW_GPU_SLOT_LIMIT = 32;
           this.updateStatus("Switch to Spark to pick alignment points in the viewport");
           return;
         }
-        this.alignPickMode = true;
-        this.syncAlignUi();
+        this.setViewportEditingMode("align");
         const role = this.dom.alignRoleSelect?.value === "target" ? "target" : "source";
         const item = this.getAlignSelection(role);
         this.updateStatus(item
@@ -4790,13 +4830,24 @@ const LIGHT_SHADOW_GPU_SLOT_LIMIT = 32;
       }
 
       startColorPickMode() {
-        this.isColorPickMode = true;
-        this.syncColorPickButton();
+        this.setViewportEditingMode("color");
         this.updateStatus("Color picker active. Left-click the 3D view to confirm.");
       }
 
       stopColorPickMode() {
         this.isColorPickMode = false;
+        this.syncColorPickButton();
+      }
+
+      setViewportEditingMode(mode) {
+        // One left-click must belong to one tool. Finish any stroke before
+        // changing ownership so its geometry changes keep their undo entry.
+        this.endBrushStroke();
+        this.brushEnabled = mode === "brush";
+        this.alignPickMode = mode === "align";
+        this.isColorPickMode = mode === "color";
+        this.syncBrushUi(false);
+        this.syncAlignUi();
         this.syncColorPickButton();
       }
 
@@ -4837,7 +4888,7 @@ const LIGHT_SHADOW_GPU_SLOT_LIMIT = 32;
           }
           entries.push({
             alpha: Number(splat.opacity ?? splat.alpha ?? splat.rgba?.w ?? splat.rgba?.a ?? 1) || 0,
-            color: toLinearRgbArray(splat.color ?? splat.rgb ?? splat.rgba),
+            color: sourceColorToLinear(splat.color ?? splat.rgb ?? splat.rgba, item.sourceColorSpace),
             label: `Splat ${index + 1}`,
             localNormal: this.getSplatLocalNormal(splat),
             position: new THREE.Vector3(center.x, center.y, center.z),
@@ -4989,7 +5040,7 @@ const LIGHT_SHADOW_GPU_SLOT_LIMIT = 32;
         bestSplat = this.getPackedSplatAt(item, bestIndex);
         return {
           alpha: Number(bestSplat.opacity ?? bestSplat.alpha ?? bestSplat.rgba?.w ?? bestSplat.rgba?.a ?? 1) || 0,
-          baseLinearRgb: toLinearRgbArray(bestSplat.color ?? bestSplat.rgb ?? bestSplat.rgba),
+          baseLinearRgb: sourceColorToLinear(bestSplat.color ?? bestSplat.rgb ?? bestSplat.rgba, item.sourceColorSpace),
           itemId: item.id,
           label: `Splat ${bestIndex + 1}`,
           localNormal: this.getSplatLocalNormal(bestSplat),
@@ -5044,7 +5095,7 @@ const LIGHT_SHADOW_GPU_SLOT_LIMIT = 32;
         bestSplat = this.getPackedSplatAt(item, bestIndex);
         return {
           alpha: Number(bestSplat.opacity ?? bestSplat.alpha ?? bestSplat.rgba?.w ?? bestSplat.rgba?.a ?? 1) || 0,
-          baseLinearRgb: toLinearRgbArray(bestSplat.color ?? bestSplat.rgb ?? bestSplat.rgba),
+          baseLinearRgb: sourceColorToLinear(bestSplat.color ?? bestSplat.rgb ?? bestSplat.rgba, item.sourceColorSpace),
           itemId: item.id,
           label: `Splat ${bestIndex + 1}`,
           localNormal: this.getSplatLocalNormal(bestSplat),
@@ -5170,6 +5221,9 @@ const LIGHT_SHADOW_GPU_SLOT_LIMIT = 32;
         if (!item || !sample) {
           return [0, 0, 0];
         }
+        if (this.backendManager && this.backendManager.activeId !== "spark") {
+          return sample.baseLinearRgb.slice();
+        }
         const itemMode = this.getRenderModeForItem(item);
         const splatExposureScale = itemMode === "beauty" ? this.getBeautyExposureScaleForItem(item) : 1;
         const toneCurve = item.settings?.toneCurve ?? buildToneCurveState();
@@ -5203,7 +5257,7 @@ const LIGHT_SHADOW_GPU_SLOT_LIMIT = 32;
               color: light.color,
               intensity: light.intensity,
               position: light.position,
-              visibility: this.getCachedLightTransmission(item, sample, light.id) ?? (isFirstVisibleLight
+              visibility: (this.getCachedLightTransmission(item, sample, light.id) ?? 1) * (isFirstVisibleLight
                 ? this.evaluateLightTransmission(light.position, worldPosition, item.id)
                 : 1),
               visible: light.visible,
@@ -5381,9 +5435,9 @@ const LIGHT_SHADOW_GPU_SLOT_LIMIT = 32;
         let changed = 0;
         for (let index = 0; index < count; index += 1) {
           const splat = splats.getSplat(index);
-          const baseLinear = toLinearRgbArray(splat.color ?? splat.rgb ?? splat.rgba);
+          const baseLinear = sourceColorToLinear(splat.color ?? splat.rgb ?? splat.rgba, item.sourceColorSpace);
           const nextLinear = applyCubeLutToLinearRgb(baseLinear, lut, { inputColorSpace, outputColorSpace });
-          color.setRGB(nextLinear[0], nextLinear[1], nextLinear[2]);
+          color.setRGB(...linearColorToSource(nextLinear, item.sourceColorSpace));
           splats.setSplat(index, splat.center, splat.scales, splat.quaternion, splat.opacity, color);
           changed += 1;
         }
@@ -5820,12 +5874,7 @@ const LIGHT_SHADOW_GPU_SLOT_LIMIT = 32;
           this.syncBrushUi(true);
           return;
         }
-        this.brushEnabled = !this.brushEnabled;
-        this.brushStroke = null;
-        if (!this.brushEnabled) {
-          this.hideBrushOverlay();
-        }
-        this.syncBrushUi(false);
+        this.setViewportEditingMode(this.brushEnabled ? null : "brush");
         this.updateStatus(this.brushEnabled ? "Brush editing enabled" : "Brush editing disabled");
       }
 
@@ -6384,7 +6433,8 @@ const LIGHT_SHADOW_GPU_SLOT_LIMIT = 32;
       getExportCommentsForItem(item, options) {
         const comments = [
           `gs360_export_item ${item.modelMeta?.name ?? item.id}`,
-          "gs360_export_color_space linear_srgb_values_srgb_display",
+          "gs360_export_color_space srgb",
+          "gs360_export_appearance baked_sh0",
         ];
         if (options.opacity) {
           comments.push(`gs360_export_opacity ${formatNumber(item.settings?.opacity ?? 1, 6)}`);
@@ -6415,8 +6465,6 @@ const LIGHT_SHADOW_GPU_SLOT_LIMIT = 32;
         const worldScale = new THREE.Vector3();
         worldMatrix.decompose(new THREE.Vector3(), worldQuaternion, worldScale);
         const normalMatrix = new THREE.Matrix3().getNormalMatrix(worldMatrix);
-        const exposureScale = 2 ** clampNumber(this.state.exposure, EXPOSURE_LIMITS)
-          * 2 ** clampNumber(item.settings?.exposure ?? 0, EXPOSURE_LIMITS);
         const opacityScale = options.opacity
           ? clampNumber(item.settings?.opacity ?? 1, OPACITY_LIMITS)
           : 1;
@@ -6443,17 +6491,19 @@ const LIGHT_SHADOW_GPU_SLOT_LIMIT = 32;
             Math.max(Number(scales.y ?? scales[1] ?? 0.0001) || 0.0001, 0.0001),
             Math.max(Number(scales.z ?? scales[2] ?? 0.0001) || 0.0001, 0.0001),
           );
-          const color = toLinearRgbArray(splat.color ?? splat.rgb ?? splat.rgba);
+          const color = this.getDisplayLinearColorForSample(item, {
+            baseLinearRgb: sourceColorToLinear(splat.color ?? splat.rgb ?? splat.rgba, item.sourceColorSpace),
+            localPosition,
+            localNormal: this.getSplatLocalNormal(splat),
+            splatIndex: index,
+          });
+          const encoded = linearColorToSrgb(color);
           const alpha = Number(splat.opacity ?? splat.alpha ?? splat.rgba?.w ?? splat.rgba?.a ?? 1) || 0;
           exportSplats.push({
             position: localPosition.applyMatrix4(worldMatrix),
             normal: localNormal.applyMatrix3(normalMatrix).normalize(),
-            color: new THREE.Color(
-              THREE.MathUtils.clamp(color[0] * exposureScale, 0, 1),
-              THREE.MathUtils.clamp(color[1] * exposureScale, 0, 1),
-              THREE.MathUtils.clamp(color[2] * exposureScale, 0, 1),
-            ),
-            alpha: THREE.MathUtils.clamp(alpha * opacityScale, 0.001, 0.999),
+            color: new THREE.Color(...encoded),
+            alpha: THREE.MathUtils.clamp(alpha * opacityScale, 0, 1),
             scale: localScale.clone().multiply(worldScale).clampScalar(0.0001, 1e6),
             quaternion: worldQuaternion.clone().multiply(localQuaternion).normalize(),
           });
@@ -6470,6 +6520,31 @@ const LIGHT_SHADOW_GPU_SLOT_LIMIT = 32;
         const usedNames = new Set();
         const exportPayloads = [];
         const exportOptions = this.getExportOptions();
+        // A portable PLY cannot retain runtime modifiers, nonstandard falloff,
+        // or view-dependent SH after nonlinear grading. Do not silently save
+        // a different look when the current path cannot represent it.
+        const sparkActive = !this.backendManager || this.backendManager.activeId === "spark";
+        if (sparkActive && this.shouldAttachAnimationModifier()) {
+          this.updateStatus("Reset animation to time 0 before saving a static appearance");
+          return;
+        }
+        if (sparkActive && exportItems.some((item) => this.getRenderModeForItem(item) !== "beauty")) {
+          this.updateStatus("Switch to Beauty before saving the splat appearance");
+          return;
+        }
+        if (sparkActive && !this.staticBakeApplied && exportItems.some((item) => Math.min(item.loadedShDegree ?? 0, item.settings?.shLevel ?? 0) > 0)) {
+          this.updateStatus("Set SH Level to SH0 before saving appearance; view-dependent SH export is not supported");
+          return;
+        }
+        if (sparkActive && Math.abs((this.spark?.falloff ?? 1) - 1) > 1e-6) {
+          this.updateStatus("Set Falloff to 1 before saving a portable Gaussian PLY");
+          return;
+        }
+        if (exportOptions.opacity && exportItems.some((item) => (item.settings?.opacity ?? 1) > 1)) {
+          this.updateStatus("Set Opacity to 1 or below before saving a portable Gaussian PLY");
+          return;
+        }
+        this.syncLightingRuntimeState();
         for (const [index, item] of exportItems.entries()) {
           const exportSplats = this.buildExportSplatsForItem(item, exportOptions);
           if (!exportSplats.length) {
@@ -7508,6 +7583,7 @@ const LIGHT_SHADOW_GPU_SLOT_LIMIT = 32;
 
           const sceneItem = this.createSceneItemRecord(fileName, source);
           sceneItem.mesh = mesh;
+          sceneItem.sourceColorSpace = detectSplatColorSpace(readPlyHeaderText(fileBytes), Boolean(primitiveMeta));
           sceneItem.loadedShDegree = primitiveMeta?.shDegree ?? inferShDegree(mesh);
           sceneItem.settings.shLevel = THREE.MathUtils.clamp(sceneItem.loadedShDegree, 0, 3);
           if (primitiveMeta?.defaultSettings) {
@@ -7938,6 +8014,11 @@ const LIGHT_SHADOW_GPU_SLOT_LIMIT = 32;
         }
       }
 
+      handleViewportPointerLeave() {
+        this.clearHoverReadout();
+        this.hideBrushOverlay();
+      }
+
       clearHoverReadout() {
         this.hoverPointer = null;
         const selectedItem = this.getSelectedItem();
@@ -8281,6 +8362,11 @@ const LIGHT_SHADOW_GPU_SLOT_LIMIT = 32;
             ? (this.state.renderMode || "beauty")
             : "beauty";
           const objectModifiers = [];
+          // Decode after source SH evaluation, before exposure, lights, and
+          // grading. Never transform individual SH coefficients nonlinearly.
+          if (itemMode === "beauty" && item.sourceColorSpace !== SPLAT_COLOR_SPACE.LINEAR) {
+            objectModifiers.push(createSplatColorTransferModifier(true));
+          }
           if (item.baseObjectModifier) {
             objectModifiers.push(item.baseObjectModifier);
           }
@@ -8327,6 +8413,9 @@ const LIGHT_SHADOW_GPU_SLOT_LIMIT = 32;
             if (!isNeutralToneCurve(item.settings.toneCurve)) {
               worldModifiers.push(createToneCurveColorModifier(item.settings.toneCurve));
             }
+            // Spark's native splat shader writes encoded RGB directly; the
+            // host renderer.outputColorSpace setting does not encode it.
+            worldModifiers.push(createSplatColorTransferModifier(false));
             item.mesh.worldModifiers = worldModifiers.length ? worldModifiers : undefined;
             item.mesh.covWorldModifiers = item.mesh.worldModifiers;
           } else if (itemMode === "depth") {

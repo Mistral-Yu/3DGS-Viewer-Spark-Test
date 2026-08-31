@@ -5,6 +5,7 @@ import {
   flattenVisibleSnapshot,
   updateFlattenedSnapshotItemTransforms,
 } from "./renderer-contract.mjs";
+import { linearToSrgbChannel } from "./viewer-color.mjs";
 
 const EXPECTED_THREE_REVISION = "186dev";
 const BACKEND_VENDOR_DEFINITIONS = Object.freeze({
@@ -109,9 +110,10 @@ const createGsplatData = (item) => {
     scale0[index] = item.scale[offset3];
     scale1[index] = item.scale[offset3 + 1];
     scale2[index] = item.scale[offset3 + 2];
-    fdc0[index] = (item.linearRgb[offset3] - 0.5) / SH_C0;
-    fdc1[index] = (item.linearRgb[offset3 + 1] - 0.5) / SH_C0;
-    fdc2[index] = (item.linearRgb[offset3 + 2] - 0.5) / SH_C0;
+    // GSplat SH coefficients describe display-encoded RGB, not linear RGB.
+    fdc0[index] = (linearToSrgbChannel(item.linearRgb[offset3]) - 0.5) / SH_C0;
+    fdc1[index] = (linearToSrgbChannel(item.linearRgb[offset3 + 1]) - 0.5) / SH_C0;
+    fdc2[index] = (linearToSrgbChannel(item.linearRgb[offset3 + 2]) - 0.5) / SH_C0;
     opacity[index] = Math.max(0, item.opacity[index] * item.opacityMultiplier);
   }
   const data = new PlayCanvas.GSplatData([{
@@ -182,6 +184,10 @@ class PlayCanvasBackend {
     this.app.root.addChild(this.root);
     this.cameraEntity = new PlayCanvas.Entity("LookDev Camera");
     this.cameraEntity.addComponent("camera", { clearColor: new PlayCanvas.Color(0.024, 0.063, 0.098, 1) });
+    // Preserve the encoded splat colors without a gamma-2.2 decode/encode
+    // round trip or an implicit tone mapper. Matches native sRGB splat blending.
+    this.cameraEntity.camera.gammaCorrection = PlayCanvas.GAMMA_SRGB;
+    this.cameraEntity.camera.toneMapping = PlayCanvas.TONEMAP_NONE;
     this.cameraEntity.camera.horizontalFov = false;
     this.app.root.addChild(this.cameraEntity);
   }
@@ -395,6 +401,7 @@ class ThreeR186Backend {
     stage.append(this.canvas);
     this.renderer = new ThreeR186.WebGLRenderer({ canvas: this.canvas, alpha: false, antialias: false, powerPreference: "high-performance" });
     this.renderer.outputColorSpace = ThreeR186.SRGBColorSpace;
+    this.renderer.toneMapping = ThreeR186.NoToneMapping;
     this.renderer.setPixelRatio(1);
     this.scene = new ThreeR186.Scene();
     this.camera = new ThreeR186.PerspectiveCamera(60, 1, 0.0005, 5000);

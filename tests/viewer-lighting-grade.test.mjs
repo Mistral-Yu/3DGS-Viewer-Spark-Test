@@ -2,6 +2,7 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import { readFileSync } from 'node:fs';
 import * as tone from '../viewer-tone-curve.mjs';
+import { SPLAT_COLOR_SPACE } from '../viewer-color.mjs';
 import { applyDirectLighting, applyOneBouncePreview, DIRECT_LIGHT_NORMAL_POLICY, orientDirectLightNormal } from '../viewer-lighting.mjs';
 
 const source = readFileSync(new URL('../viewer.js', import.meta.url), 'utf8');
@@ -61,6 +62,8 @@ test('graded items retain their own post-light curve when another item or a ligh
     mesh: { updateMatrixWorld() {} },
   }));
   const apply = method('applyRenderMode', {
+    SPLAT_COLOR_SPACE,
+    createSplatColorTransferModifier: (decode) => ({ kind: decode ? 'decode' : 'encode' }),
     isNeutralToneCurve: tone.isNeutralToneCurve,
     createPointLightColorModifier: ({ lightOcclusionHandles }) => ({ kind: 'light', cache: lightOcclusionHandles }),
     createToneCurveColorModifier: (curve) => ({ kind: 'grade', curve }),
@@ -75,8 +78,9 @@ test('graded items retain their own post-light curve when another item or a ligh
   for (const selection of ['item-0', 'item-1', null]) {
     viewer.selectedSceneItemId = selection;
     apply.call(viewer, false);
-    assert.deepEqual(items[0].mesh.worldModifiers.map((entry) => entry.kind), ['light', 'grade'], `selection ${selection}`);
-    assert.deepEqual(items[1].mesh.worldModifiers.map((entry) => entry.kind), ['light']);
+    assert.deepEqual(items[0].mesh.objectModifiers.map((entry) => entry.kind), ['decode']);
+    assert.deepEqual(items[0].mesh.worldModifiers.map((entry) => entry.kind), ['light', 'grade', 'encode'], `selection ${selection}`);
+    assert.deepEqual(items[1].mesh.worldModifiers.map((entry) => entry.kind), ['light', 'encode']);
     assert.equal(items[0].mesh.worldModifiers[0].cache, items[0].cache);
     assert.equal(items[0].mesh.worldModifiers[1].curve, grade);
   }
@@ -121,6 +125,7 @@ test('picked-color readouts use the second light cache as well as the first afte
     getRenderModeForItem: () => 'beauty', getBeautyExposureScaleForItem: () => 2,
     getSampleWorldPosition: () => [0, 0, 0], getSampleWorldNormal: () => [0, 1, 0],
     getCachedLightTransmission: (_item, _sample, id) => id === 'red' ? 0.1 : 0.7,
+    evaluateLightTransmission: () => 1,
     sceneLights: [
       { id: 'red', position: [0, 2, 0], color: { r: 1, g: 0, b: 0 }, intensity: 4, visible: true },
       { id: 'blue', position: [0, 2, 0], color: { r: 0, g: 0, b: 1 }, intensity: 2, visible: true },
