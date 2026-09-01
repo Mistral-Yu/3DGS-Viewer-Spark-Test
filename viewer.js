@@ -1477,7 +1477,10 @@ const LIGHT_SHADOW_GPU_SLOT_LIMIT = 32;
         this.firstPerson = new FirstPersonController(this.camera, this.renderer.domElement);
         this.firstPerson.setPointerEnabled(false);
         this.firstPerson.setMovementEnabled(true);
-        this.firstPerson.onChange = () => this.invalidateRender();
+        this.firstPerson.onChange = () => {
+          this.invalidateRender();
+          this.scheduleCameraDependentAppearanceRefresh();
+        };
         this.backendManager = null;
         this.backendSwitchToken = 0;
         this.pendingActiveBackendTransformSync = false;
@@ -1609,6 +1612,8 @@ const LIGHT_SHADOW_GPU_SLOT_LIMIT = 32;
         this.sparkSceneUpdatePromise = null;
         this.pendingAnimationDelta = 0;
         this.pendingPreviewSparkUpdate = false;
+        this.pendingActiveBackendAppearanceRefreshReason = null;
+        this.cameraAppearanceRefreshHandle = 0;
         this.postLoadRefreshHandle = 0;
         this.stageResizeObserver = null;
         this.devicePixelRatioMedia = null;
@@ -1724,6 +1729,7 @@ const LIGHT_SHADOW_GPU_SLOT_LIMIT = 32;
         this.backendManager = new LookDevBackendManager({
           stage: this.dom.stage,
           inputCanvas: this.renderer.domElement,
+          onFrameRequest: () => this.forceVisualRefresh(2),
           onStatus: (message) => this.updateStatus(message),
           onTelemetry: (telemetry) => this.syncBackendTelemetry(telemetry),
         });
@@ -1779,7 +1785,10 @@ const LIGHT_SHADOW_GPU_SLOT_LIMIT = 32;
         this.setProgress("Idle", 0);
         this.updateRenderChip("Idle");
         this.updateStatus("Viewer ready");
-        this.orbitControls.addEventListener("change", () => this.invalidateRender());
+        this.orbitControls.addEventListener("change", () => {
+          this.invalidateRender();
+          this.scheduleCameraDependentAppearanceRefresh();
+        });
         window.addEventListener("resize", this.handleViewportResize);
         window.visualViewport?.addEventListener("resize", this.handleViewportResize);
         this.watchDevicePixelRatio();
@@ -2293,7 +2302,29 @@ const LIGHT_SHADOW_GPU_SLOT_LIMIT = 32;
 
       captureRendererSnapshot() {
         this.syncVisibleSceneItemTransforms();
-        return createSceneSnapshot(this.sceneItems, { visibleOnly: true });
+        // Camera position is shared by every splat in this CPU snapshot. Cache
+        // it once to avoid two world-matrix reads and allocations per sample.
+        const appearanceContext = {
+          cameraPosition: this.camera.getWorldPosition(new THREE.Vector3()),
+        };
+        return createSceneSnapshot(this.sceneItems, {
+          mapLinearRgb: ({ index, linearRgb, sceneItem, splatCenter, splatQuaternion, splatScale }) => (
+            this.getDisplayLinearColorForSample(sceneItem, {
+              baseLinearRgb: linearRgb,
+              localNormal: this.getSplatLocalNormal({
+                quaternion: splatQuaternion,
+                scales: splatScale,
+              }),
+              localPosition: new THREE.Vector3(
+                Number(splatCenter?.x ?? splatCenter?.[0] ?? 0) || 0,
+                Number(splatCenter?.y ?? splatCenter?.[1] ?? 0) || 0,
+                Number(splatCenter?.z ?? splatCenter?.[2] ?? 0) || 0,
+              ),
+              splatIndex: index,
+            }, appearanceContext)
+          ),
+          visibleOnly: true,
+        });
       }
 
       refreshActiveBackendSnapshot(reason = "scene updated", { force = false, syncActive = true } = {}) {
@@ -2304,11 +2335,68 @@ const LIGHT_SHADOW_GPU_SLOT_LIMIT = 32;
         try {
           this.backendManager.setSnapshot(this.captureRendererSnapshot(), { syncActive });
           this.pendingActiveBackendTransformSync = false;
+          // PlayCanvas reconciles unified GSplat placement changes during its
+          // first render pass. Keep a second invalidated frame so the newly
+          // uploaded appearance, rather than the retired placement, is shown.
+          if (syncActive) this.forceVisualRefresh(2);
         } catch (error) {
           const message = error instanceof Error ? error.message : "Renderer snapshot failed";
           this.updateStatus(`${reason}: ${message}`);
           this.updateRenderChip("Backend error");
         }
+      }
+
+      requestActiveBackendAppearanceRefresh(reason, { immediate = false } = {}) {
+        if (!this.backendManager || this.backendManager.isSparkActive()) return;
+        if (immediate) {
+          this.pendingActiveBackendAppearanceRefreshReason = null;
+          this.refreshActiveBackendSnapshot(reason);
+          return;
+        }
+        this.pendingActiveBackendAppearanceRefreshReason = reason;
+      }
+
+      flushActiveBackendAppearanceRefresh() {
+        const reason = this.pendingActiveBackendAppearanceRefreshReason;
+        if (!reason) return;
+        this.pendingActiveBackendAppearanceRefreshReason = null;
+        this.refreshActiveBackendSnapshot(reason);
+      }
+
+      hasCameraDependentAlternateAppearance() {
+        return Boolean(
+          this.backendManager
+          && !this.backendManager.isSparkActive()
+          && !this.staticBakeApplied
+          && this.sceneLights.some((light) => light.visible)
+          && this.sceneItems.some((item) => (
+            item.visible
+            && this.getRenderModeForItem(item) === "beauty"
+            && !item.hasAuthoredSplatNormals
+          )),
+        );
+      }
+
+      scheduleCameraDependentAppearanceRefresh() {
+        if (!this.hasCameraDependentAlternateAppearance()) {
+          if (this.cameraAppearanceRefreshHandle) {
+            window.clearTimeout(this.cameraAppearanceRefreshHandle);
+            this.cameraAppearanceRefreshHandle = 0;
+          }
+          return;
+        }
+        if (this.cameraAppearanceRefreshHandle) {
+          window.clearTimeout(this.cameraAppearanceRefreshHandle);
+        }
+        // Covariance-derived normals face the camera. Keep navigation smooth,
+        // then rebake once after the view settles so alternate lighting cannot
+        // remain captured from an old side of the surface.
+        this.cameraAppearanceRefreshHandle = window.setTimeout(() => {
+          this.cameraAppearanceRefreshHandle = 0;
+          if (this.hasCameraDependentAlternateAppearance()) {
+            this.refreshActiveBackendSnapshot("Camera-dependent lighting updated");
+          }
+        }, 140);
       }
 
       syncActiveBackendItemTransforms() {
@@ -2338,6 +2426,7 @@ const LIGHT_SHADOW_GPU_SLOT_LIMIT = 32;
             getSnapshot: () => this.captureRendererSnapshot(),
           });
           if (request !== this.backendSwitchToken || !activated) return;
+          this.pendingActiveBackendAppearanceRefreshReason = null;
           this.pendingActiveBackendTransformSync = false;
           if (!this.backendManager.isSparkActive()) this.alignPickMode = false;
           if (!this.isSparkAnimationAvailable()) {
@@ -2495,6 +2584,7 @@ const LIGHT_SHADOW_GPU_SLOT_LIMIT = 32;
               this.pendingPreviewSparkUpdate = false;
               this.queueSparkSceneUpdate();
             }
+            this.flushActiveBackendAppearanceRefresh();
             this.flushRenderNow();
           }, previewIntervalMs);
         }
@@ -2521,6 +2611,7 @@ const LIGHT_SHADOW_GPU_SLOT_LIMIT = 32;
           this.pendingPreviewSparkUpdate = false;
           this.queueSparkSceneUpdate();
         }
+        this.flushActiveBackendAppearanceRefresh();
         this.scheduledRenderAt = 0;
         this.lastRenderFrameAt = 0;
         this.renderInvalidated = true;
@@ -4783,6 +4874,7 @@ const LIGHT_SHADOW_GPU_SLOT_LIMIT = 32;
         if (needsRebuild) {
           this.applyRenderMode(false);
           this.queueSparkSceneUpdate();
+          this.refreshActiveBackendSnapshot("Lighting updated");
           return;
         }
         if (this.hoverPointer) {
@@ -4792,6 +4884,7 @@ const LIGHT_SHADOW_GPU_SLOT_LIMIT = 32;
         this.invalidateRender();
         this.forceVisualRefresh(2);
         this.queueSparkSceneUpdate();
+        this.refreshActiveBackendSnapshot("Lighting updated");
       }
 
       getSceneExposureScale() {
@@ -5217,12 +5310,9 @@ const LIGHT_SHADOW_GPU_SLOT_LIMIT = 32;
         return cache.data[sample.splatIndex * cache.lightIds.length + lightIndex];
       }
 
-      getDisplayLinearColorForSample(item, sample) {
+      getDisplayLinearColorForSample(item, sample, appearanceContext = null) {
         if (!item || !sample) {
           return [0, 0, 0];
-        }
-        if (this.backendManager && this.backendManager.activeId !== "spark") {
-          return sample.baseLinearRgb.slice();
         }
         const itemMode = this.getRenderModeForItem(item);
         const splatExposureScale = itemMode === "beauty" ? this.getBeautyExposureScaleForItem(item) : 1;
@@ -5239,8 +5329,10 @@ const LIGHT_SHADOW_GPU_SLOT_LIMIT = 32;
         const normalPolicy = item.hasAuthoredSplatNormals
           ? DIRECT_LIGHT_NORMAL_POLICY.AUTHORED_ONE_SIDED
           : DIRECT_LIGHT_NORMAL_POLICY.IMPORTED_COVARIANCE_FACE_FORWARD;
+        const cameraPosition = appearanceContext?.cameraPosition
+          ?? this.camera.getWorldPosition(new THREE.Vector3());
         const receiverNormal = orientDirectLightNormal({
-          cameraPosition: this.camera.getWorldPosition(new THREE.Vector3()),
+          cameraPosition,
           normal: worldNormal,
           normalPolicy,
           position: worldPosition,
@@ -5263,7 +5355,7 @@ const LIGHT_SHADOW_GPU_SLOT_LIMIT = 32;
               visible: light.visible,
             };
           }),
-          cameraPosition: this.camera.getWorldPosition(new THREE.Vector3()),
+          cameraPosition,
           normal: worldNormal,
           normalPolicy,
           position: worldPosition,
@@ -6589,7 +6681,7 @@ const LIGHT_SHADOW_GPU_SLOT_LIMIT = 32;
         this.forceVisualRefresh(2);
       }
 
-      applyExposure(updateChip = true, syncInput = true) {
+      applyExposure(updateChip = true, syncInput = true, { refreshBackend = true } = {}) {
         this.markStaticBakeStale("Scene exposure changed");
         const exposure = clampNumber(this.state.exposure, EXPOSURE_LIMITS);
         this.state.exposure = exposure;
@@ -6607,11 +6699,12 @@ const LIGHT_SHADOW_GPU_SLOT_LIMIT = 32;
         this.syncLightingRuntimeState();
         this.renderPickedColors();
         this.invalidateRender();
+        this.requestActiveBackendAppearanceRefresh("Scene exposure updated", { immediate: refreshBackend });
       }
 
       setExposure(value, { commit = true, syncInput = true } = {}) {
         this.state.exposure = commit ? clampNumber(value, EXPOSURE_LIMITS) : Number(value);
-        this.applyExposure(true, syncInput);
+        this.applyExposure(true, syncInput, { refreshBackend: commit });
         if (commit) {
           this.finishDeferredInteraction();
         } else {
@@ -6638,9 +6731,11 @@ const LIGHT_SHADOW_GPU_SLOT_LIMIT = 32;
         this.invalidateRender();
         this.forceVisualRefresh(commit ? 2 : 1);
         if (commit) {
+          this.requestActiveBackendAppearanceRefresh("Tone curve updated", { immediate: true });
           this.queueSparkSceneUpdate();
           this.finishDeferredInteraction();
         } else {
+          this.requestActiveBackendAppearanceRefresh("Tone curve preview updated");
           this.pendingPreviewSparkUpdate = true;
           this.startDeferredInteraction();
         }
@@ -6819,7 +6914,7 @@ const LIGHT_SHADOW_GPU_SLOT_LIMIT = 32;
         this.applyToneCurve(true, true, { commit: true });
       }
 
-      applySelectedExposure(updateChip = true, syncInput = true) {
+      applySelectedExposure(updateChip = true, syncInput = true, { refreshBackend = true } = {}) {
         this.markStaticBakeStale("Selected exposure changed");
         const exposure = clampNumber(this.state.selectedExposure, EXPOSURE_LIMITS);
         this.state.selectedExposure = exposure;
@@ -6841,11 +6936,12 @@ const LIGHT_SHADOW_GPU_SLOT_LIMIT = 32;
         this.syncLightingRuntimeState();
         this.renderPickedColors();
         this.invalidateRender();
+        this.requestActiveBackendAppearanceRefresh("Selected exposure updated", { immediate: refreshBackend });
       }
 
       setSelectedExposure(value, { commit = true, syncInput = true } = {}) {
         this.state.selectedExposure = commit ? clampNumber(value, EXPOSURE_LIMITS) : Number(value);
-        this.applySelectedExposure(true, syncInput);
+        this.applySelectedExposure(true, syncInput, { refreshBackend: commit });
         if (commit) {
           this.finishDeferredInteraction();
         } else {
@@ -8209,6 +8305,7 @@ const LIGHT_SHADOW_GPU_SLOT_LIMIT = 32;
         }
         if (movedByKeys) {
           this.updateCameraClipping();
+          this.scheduleCameraDependentAppearanceRefresh();
         }
         if (this.activeMode === "orbit") {
           this.orbitControls.autoRotate = this.state.autoRotate;

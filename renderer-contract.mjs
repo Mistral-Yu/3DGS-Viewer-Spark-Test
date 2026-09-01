@@ -35,7 +35,7 @@ export const RENDERER_MANIFEST = Object.freeze({
       directionalCaster: false,
       splatReceivesShadows: false,
       animation: "Spark only",
-      lighting: "Unlit snapshot; Spark grading and lights are not transferred",
+      lighting: "CPU appearance snapshot with exposure, lights, bounce, and tone curve",
     }),
   }),
   "three-r186": Object.freeze({
@@ -48,7 +48,7 @@ export const RENDERER_MANIFEST = Object.freeze({
       directionalCaster: false,
       splatReceivesShadows: false,
       animation: "Spark only",
-      lighting: "Unlit snapshot; Spark grading and lights are not transferred",
+      lighting: "CPU appearance snapshot with exposure, lights, bounce, and tone curve",
     }),
   }),
 });
@@ -91,6 +91,7 @@ const copyAuthoredDiffuseAlbedo = (target, offset, value) => {
  */
 export function createSceneSnapshot(sceneItems = [], {
   includeQuaternion = true,
+  mapLinearRgb = null,
   visibleOnly = false,
 } = {}) {
   const items = [];
@@ -138,6 +139,22 @@ export function createSceneSnapshot(sceneItems = [], {
       copyVector3(scale, slot * 3, splatScale);
       if (quaternion) copyQuaternion(quaternion, slot * 4, splatQuaternion);
       copyLinearRgb(linearRgb, slot * 3, splatColor, sceneItem.sourceColorSpace);
+      if (typeof mapLinearRgb === "function") {
+        const offset = slot * 3;
+        const mapped = mapLinearRgb({
+          index: slot,
+          linearRgb: [linearRgb[offset], linearRgb[offset + 1], linearRgb[offset + 2]],
+          sceneItem,
+          splatCenter,
+          splatQuaternion,
+          splatScale,
+        });
+        if (mapped) {
+          linearRgb[offset] = finite(mapped[0], linearRgb[offset]);
+          linearRgb[offset + 1] = finite(mapped[1], linearRgb[offset + 1]);
+          linearRgb[offset + 2] = finite(mapped[2], linearRgb[offset + 2]);
+        }
+      }
       opacity[slot] = finite(splatOpacity, 1);
       sourceIndex[slot] = slot;
       const authoredNormal = authoredEntries[slot]?.normal;

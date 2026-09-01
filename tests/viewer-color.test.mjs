@@ -112,6 +112,23 @@ test('snapshot source-space conversion gives identical linear colors without tou
   }
 });
 
+test('snapshot appearance mapping runs after source decoding and preserves alpha', () => {
+  const mappedInputs = [];
+  const snapshot = createSceneSnapshot([{ id: 'mapped', sourceColorSpace: color.SPLAT_COLOR_SPACE.SRGB,
+    mesh: { numSplats: 1, forEachSplat: cb => cb(0, { x: 1, y: 2, z: 3 }, { x: 1, y: 1, z: 1 },
+      { x: 0, y: 0, z: 0, w: 1 }, 0.37, [0.25, 0.5, 0.75]) } }], {
+    mapLinearRgb: (entry) => {
+      mappedInputs.push(entry);
+      return entry.linearRgb.map(value => value * 2);
+    },
+  });
+  near(mappedInputs[0].linearRgb, color.sourceColorToLinear([0.25, 0.5, 0.75]));
+  near([...snapshot.items[0].linearRgb], mappedInputs[0].linearRgb.map(value => value * 2));
+  near([...snapshot.items[0].opacity], [0.37]);
+  assert.equal(mappedInputs[0].sceneItem.id, 'mapped');
+  assert.equal(mappedInputs[0].splatCenter.x, 1);
+});
+
 test('PlayCanvas adapter encodes linear snapshots exactly once; both alternate backends disable tone mapping', () => {
   const backend = readFileSync(new URL('../viewer-backends.mjs', import.meta.url), 'utf8');
   const createData = evaluate(block(backend, 'const createGsplatData =', 'const setEntityTransform ='),
@@ -168,13 +185,16 @@ test('export bakes exposure, colored lighting, cached and legacy occlusion, and 
   }
 });
 
-test('alternate-renderer exports match their ungraded snapshot, not hidden Spark effects', () => {
+test('exports use the same graded appearance for every active renderer', () => {
   const { viewer, item, splats } = fixture('srgb');
   item.settings.exposure = 2;
   item.settings.toneCurve.curves.master = [{ x: 0, y: 0 }, { x: 1, y: 0.1 }];
+  viewer.backendManager.activeId = 'spark';
+  const expected = color.colorComponents(viewer.buildExportSplatsForItem(item)[0].color);
+  assert.notDeepEqual(expected, color.colorComponents(splats[0].color));
   for (const activeId of ['playcanvas', 'three-r186']) {
     viewer.backendManager.activeId = activeId;
-    near(color.colorComponents(viewer.buildExportSplatsForItem(item)[0].color), color.colorComponents(splats[0].color));
+    near(color.colorComponents(viewer.buildExportSplatsForItem(item)[0].color), expected);
   }
 });
 

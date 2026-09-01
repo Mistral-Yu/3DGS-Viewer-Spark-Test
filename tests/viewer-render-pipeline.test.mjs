@@ -100,6 +100,22 @@ test('persistent LUT and brush writes invalidate bake state and refresh alternat
   assert.match(source, /undoLastBrushStroke\(\)[\s\S]*?markStaticBakeStale\("Brush undo changed geometry"\)[\s\S]*?refreshActiveBackendSnapshot\("Brush undo completed"\)/);
 });
 
+test('alternate snapshots share exposure, lighting, and tone-curve appearance updates', () => {
+  assert.match(source, /captureRendererSnapshot\(\)[\s\S]*?createSceneSnapshot\(this\.sceneItems, \{[\s\S]*?mapLinearRgb:[\s\S]*?getDisplayLinearColorForSample/);
+  assert.doesNotMatch(source, /getDisplayLinearColorForSample\(item, sample\)[\s\S]*?activeId !== "spark"[\s\S]*?sample\.baseLinearRgb\.slice\(\)/);
+  assert.match(source, /applyExposure\([\s\S]*?requestActiveBackendAppearanceRefresh\("Scene exposure updated"/);
+  assert.match(source, /applySelectedExposure\([\s\S]*?requestActiveBackendAppearanceRefresh\("Selected exposure updated"/);
+  assert.match(source, /applyToneCurve\([\s\S]*?requestActiveBackendAppearanceRefresh\("Tone curve updated"/);
+  assert.match(source, /refreshLightingModel\([\s\S]*?refreshActiveBackendSnapshot\("Lighting updated"\)/);
+  assert.match(source, /hasCameraDependentAlternateAppearance\(\)[\s\S]*?!this\.staticBakeApplied[\s\S]*?!item\.hasAuthoredSplatNormals/);
+  assert.match(source, /scheduleCameraDependentAppearanceRefresh\(\)[\s\S]*?window\.setTimeout\([\s\S]*?refreshActiveBackendSnapshot\("Camera-dependent lighting updated"\)/);
+  assert.match(source, /orbitControls\.addEventListener\("change", \(\) => \{[\s\S]*?scheduleCameraDependentAppearanceRefresh\(\)/);
+  assert.match(source, /firstPerson\.onChange = \(\) => \{[\s\S]*?scheduleCameraDependentAppearanceRefresh\(\)/);
+  assert.match(source, /if \(movedByKeys\) \{[\s\S]*?scheduleCameraDependentAppearanceRefresh\(\)/);
+  assert.match(source, /startDeferredInteraction\([\s\S]*?flushActiveBackendAppearanceRefresh\(\)/);
+  assert.match(source, /finishDeferredInteraction\(\)[\s\S]*?flushActiveBackendAppearanceRefresh\(\)/);
+});
+
 test('animation applies only to a selected target and uses target-local centroid coordinates', () => {
   assert.match(source, /activeAnimationTargetItemId = target\.id/);
   assert.match(source, /Select an item before applying animation\./);

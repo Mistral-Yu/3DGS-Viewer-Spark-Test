@@ -150,12 +150,17 @@ const setEntityTransform = (entity, worldMatrix) => {
 };
 
 class PlayCanvasBackend {
-  constructor() {
+  constructor({ onFrameRequest = null } = {}) {
     this.canvas = null;
     this.app = null;
     this.cameraEntity = null;
     this.root = null;
     this.resources = [];
+    this.needsSystemUpdate = false;
+    this.onFrameRequest = onFrameRequest;
+    this.frameRequestEvent = null;
+    this.sortReadyEvent = null;
+    this.hasSnapshot = false;
   }
 
   ensure(stage) {
@@ -180,6 +185,11 @@ class PlayCanvasBackend {
     // so cancel the PlayCanvas tick and issue explicit frames in syncFrame().
     PlayCanvas.AppBase.cancelTick(this.app);
     this.app.autoRender = false;
+    this.frameRequestEvent = this.app.systems.gsplat?.on("frame:request", () => this.onFrameRequest?.()) ?? null;
+    // A CPU sort can finish after the host viewer has gone idle. Unlike
+    // frame:request, this scene event is emitted directly by the sort worker,
+    // so it can restart the viewer's invalidation loop without a PlayCanvas RAF.
+    this.sortReadyEvent = this.app.scene.on("gsplat:sorted", () => this.onFrameRequest?.());
     this.root = new PlayCanvas.Entity("Spatial LookDev snapshot");
     this.app.root.addChild(this.root);
     this.cameraEntity = new PlayCanvas.Entity("LookDev Camera");
@@ -204,10 +214,38 @@ class PlayCanvasBackend {
     if (!this.app) {
       return;
     }
-    this.clear();
-    snapshot.items.forEach((item) => {
-      if (!item.visible || !item.opacity.length) {
-        return;
+    const visibleItems = snapshot.items.filter((item) => item.visible && item.opacity.length);
+    const resourcesById = new Map(this.resources.map((entry) => [entry.id, entry]));
+    const topologyMatches = visibleItems.length === this.resources.length
+      && visibleItems.every((item) => resourcesById.get(item.id)?.resource?.numSplats === item.opacity.length);
+    if (!topologyMatches && this.hasSnapshot) {
+      // Unified GSplat keeps a packed world buffer whose placement topology is
+      // not reliably replaced after its permanent RAF has been cancelled.
+      // Topology edits are infrequent, so rebuild only this backend; appearance
+      // edits with stable ids/counts continue through the fast texture path.
+      const stage = this.canvas?.parentElement;
+      this.dispose();
+      this.ensure(stage);
+      this.canvas.classList.add("is-active-backend");
+      this.syncSnapshot(snapshot);
+      return;
+    }
+    let placementsChanged = false;
+    const nextResources = visibleItems.map((item) => {
+      let entry = resourcesById.get(item.id);
+      if (entry?.resource?.numSplats === item.opacity.length) {
+        const data = createGsplatData(item);
+        entry.resource.updateColorData(data);
+        entry.resource.updateTransformData(data);
+        setEntityTransform(entry.entity, item.worldMatrix);
+        entry.entity.gsplat.workBufferUpdate = PlayCanvas.WORKBUFFER_UPDATE_ONCE;
+        resourcesById.delete(item.id);
+        return entry;
+      }
+      if (entry) {
+        entry.entity.destroy();
+        entry.resource.destroy?.();
+        resourcesById.delete(item.id);
       }
       const resource = new PlayCanvas.GSplatResource(this.app.graphicsDevice, createGsplatData(item));
       const entity = new PlayCanvas.Entity(item.name);
@@ -217,8 +255,20 @@ class PlayCanvasBackend {
         resource,
         castShadows: false,
       });
-      this.resources.push({ entity, id: item.id, resource });
+      placementsChanged = true;
+      return { entity, id: item.id, resource };
     });
+    resourcesById.forEach(({ entity, resource }) => {
+      entity.destroy();
+      resource.destroy?.();
+      placementsChanged = true;
+    });
+    this.resources = nextResources;
+    // The viewer cancels PlayCanvas' permanent RAF and renders on demand.
+    // Reconcile newly added unified-GSplat placements once before the next
+    // manual frame; app.render() alone does not run component systems.
+    this.needsSystemUpdate ||= placementsChanged;
+    this.hasSnapshot = true;
   }
 
   syncItemTransforms(items) {
@@ -246,6 +296,14 @@ class PlayCanvasBackend {
     this.cameraEntity.camera.nearClip = camera.near;
     this.cameraEntity.camera.farClip = camera.far;
     this.cameraEntity.camera.clearColor = new PlayCanvas.Color(...colorFromHex(background), 1);
+    if (this.needsSystemUpdate) {
+      this.app.update(0);
+      this.needsSystemUpdate = false;
+    }
+    // Application.tick() normally emits this before render(). Because this
+    // backend is host-driven, emit it explicitly to advance unified-GSplat
+    // streaming and consume completed worker sorts on every requested frame.
+    this.app.fire("framerender");
     if (helpers?.showAxes) {
       const length = Math.max(Number(helpers.axesLength) || 0.5, 0.5);
       const origin = new PlayCanvas.Vec3(0, 0, 0);
@@ -284,12 +342,18 @@ class PlayCanvasBackend {
 
   dispose() {
     this.clear();
+    this.frameRequestEvent?.off?.();
+    this.frameRequestEvent = null;
+    this.sortReadyEvent?.off?.();
+    this.sortReadyEvent = null;
     this.app?.destroy();
     this.canvas?.remove();
     this.app = null;
     this.canvas = null;
     this.cameraEntity = null;
     this.root = null;
+    this.needsSystemUpdate = false;
+    this.hasSnapshot = false;
   }
 }
 
@@ -469,6 +533,10 @@ class ThreeR186Backend {
     }
     this.sortInvalidated = true;
     this.geometry.instanceCount = this.flat.count;
+    // Refresh GPU attributes immediately in the last camera order. The next
+    // frame may re-sort for a changed camera, but appearance-only snapshots
+    // must not wait for a later camera movement before becoming visible.
+    this.sortByCamera(this.camera);
   }
 
   syncItemTransforms(items) {
@@ -595,7 +663,7 @@ class ThreeR186Backend {
 }
 
 export class LookDevBackendManager {
-  constructor({ stage, inputCanvas, onTelemetry, onStatus, loadVendor = loadBackendVendor }) {
+  constructor({ stage, inputCanvas, onFrameRequest, onTelemetry, onStatus, loadVendor = loadBackendVendor }) {
     this.stage = stage;
     this.inputCanvas = inputCanvas;
     this.onTelemetry = onTelemetry;
@@ -605,7 +673,7 @@ export class LookDevBackendManager {
     this.activationToken = 0;
     this.snapshot = Object.freeze({ version: 1, items: Object.freeze([]), splatCount: 0 });
     this.backends = new Map([
-      ["playcanvas", new PlayCanvasBackend()],
+      ["playcanvas", new PlayCanvasBackend({ onFrameRequest })],
       ["three-r186", new ThreeR186Backend()],
     ]);
     this.updateCanvasVisibility();

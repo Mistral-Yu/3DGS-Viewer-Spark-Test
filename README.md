@@ -19,8 +19,8 @@ for quick experiments without downloading a dataset.
 - Camera controls and a collapsible animation timeline.
 
 Spark provides the full editing and look-development toolset. PlayCanvas and
-Three.js display SH0 scene snapshots, including baked lighting; Spark grading,
-live lights, and animation are not transferred. OBJ support is planned.
+Three.js display SH0 appearance snapshots with exposure, lights, occlusion,
+bounce preview, and grading. Animation remains Spark-only. OBJ support is planned.
 
 ## Develop
 

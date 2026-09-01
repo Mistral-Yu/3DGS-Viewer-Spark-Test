@@ -7,8 +7,8 @@
 | Backend | Gaussian path | SH / color | Lighting and shadow boundary |
 | --- | --- | --- | --- |
 | Spark 2.0 (default) | Existing native Spark renderer | Source-dependent SH0–SH3 | Look-dev controls and selected-item animation remain active. Optional cached all-splat point-light occlusion supports static scenes; the shared static-baked SH0 below is also displayed. |
-| PlayCanvas 2.21.2 | Public `GSplatData` + `GSplatResource` unified GSplat renderer | SH0 base RGB snapshot | Spark grading, animation modifiers, and lights are not transferred. Animation is Spark only; no live receive/cast. |
-| Three.js r186dev | Instanced camera-facing anisotropic Gaussian ellipse quads with projected covariance and deterministic depth sorting | SH0 base RGB snapshot | Spark grading, animation modifiers, and lights are not transferred. Animation is Spark only; no live receive/cast. |
+| PlayCanvas 2.21.2 | Public `GSplatData` + `GSplatResource` unified GSplat renderer | SH0 appearance snapshot | Exposure, point lights, available occlusion, one-bounce preview, LUT results, and tone curves are evaluated in shared Linear sRGB CPU code. Animation remains Spark only. |
+| Three.js r186dev | Instanced camera-facing anisotropic Gaussian ellipse quads with projected covariance and deterministic depth sorting | SH0 appearance snapshot | Exposure, point lights, available occlusion, one-bounce preview, LUT results, and tone curves are evaluated in shared Linear sRGB CPU code. Animation remains Spark only. |
 
 Alternate backends consume only the copied snapshot. They never render through
 Spark, and a failed backend activation leaves the currently active backend in
@@ -22,6 +22,10 @@ multiple-Three warning because Spark r180 and the comparison renderer coexist.
 All three generated bundles are minified at build time; this changes delivery
 and parse cost only, not renderer parameters or lighting math.
 
+For imported splats whose normals are inferred from covariance, alternate
+appearance snapshots refresh once camera navigation settles so face-forward
+lighting does not remain captured from an old side of the surface.
+
 Three receives exact world-space Gaussian covariance, including non-uniform
 scale, shear, and reflection. Covariance is packed once per snapshot or edited
 item, then reused for camera-depth sorting and GPU projection. The separate
@@ -34,12 +38,13 @@ static-bake transform restrictions below still apply.
 - Exposure, lighting, LUTs, and tone curves use Linear sRGB. Spark decodes after
   source SH evaluation and encodes after grading; individual SH coefficients
   are not passed through a nonlinear transfer function. Alternate backends
-  receive linear snapshots and encode once, with tone mapping disabled.
+  receive the same exposure/light/bounce/tone result as a linear SH0 appearance
+  snapshot and encode once, with tone mapping disabled.
 - Display and PLY export use the exact sRGB transfer function, not gamma 2.2.
   Native encoded-color Gaussian blending is retained for splat-viewer
   compatibility; coverage, filtering, and sorting can still differ by backend.
-- Default **Export** writes sRGB SH0 appearance, including Spark exposure,
-  lighting, and grading. Alternate renderers export their ungraded snapshot.
+- Default **Export** writes sRGB SH0 appearance, including exposure, lighting,
+  and grading, regardless of the active renderer.
   Reopening this file starts from baked colors: do not reapply the same lighting
   or grading. Match the external viewer's background, camera, and exposure.
 - Active animation, diagnostic modes, view-dependent SH, nonstandard falloff,
