@@ -41,11 +41,45 @@
           <label class="field" title="Choose the active renderer for this workspace. Alternate backends consume a copied scene snapshot and never render through Spark.">
             <span>Renderer</span>
             <select id="backend-select">
-              <option value="spark" selected>Spark 2.0</option>
-              <option value="playcanvas">PlayCanvas 2.21.2</option>
+              <option value="spark" selected>Spark 2.1</option>
+              <option value="playcanvas">PlayCanvas 2.22.0</option>
               <option value="three-r186">Three.js r186dev</option>
             </select>
           </label>
+          <details id="renderer-settings" class="options-disclosure renderer-settings">
+            <summary>Rendering settings</summary>
+            <div id="renderer-common-quality" class="field-stack compact-fields">
+              <label class="field" title="Viewer preset: sets the resolution cap and Spark Gaussian support. Custom Pixel ratio overrides the preset resolution.">
+                <span>Quality preset</span>
+                <select id="quality-select">
+                  <option value="fast">Fast</option>
+                  <option value="balanced" selected>Balanced</option>
+                  <option value="sharp">Sharp</option>
+                </select>
+              </label>
+              <label class="field" title="0 uses the quality preset and device pixel ratio. 1 uses one render pixel per CSS pixel; 2 renders about four times as many pixels.">
+                <span>Pixel ratio · 0 = Auto</span>
+                <input id="render-pixel-ratio-input" class="text-input short-input" type="number" min="0" max="4" step="any" value="0">
+                <small class="renderer-settings-note">Viewer default: Auto. Direct values 0.25–4 override the preset resolution.</small>
+              </label>
+              <label class="field" title="Viewer frame-rate limit. Lower values reduce render frequency; interaction previews may use a lower rate.">
+                <span>Frame Rate</span>
+                <input class="text-input short-input" id="render-fps-input" type="text" inputmode="decimal" value="60">
+              </label>
+              <label class="field" title="Select the spherical harmonics level used for the selected Spark splat. Alternate backends use SH0 snapshots.">
+                <span>SH Level · selected splat</span>
+                <select id="sh-select">
+                  <option value="0">SH0</option>
+                  <option value="1">SH1</option>
+                  <option value="2">SH2</option>
+                  <option value="3" selected>SH3</option>
+                </select>
+              </label>
+              <p class="renderer-settings-note">Preset, resolution and frame rate are shared across engines. SH affects only the selected Spark splat; alternate backends receive SH0. These are viewer controls, separate from engine defaults.</p>
+              <button id="reset-shared-quality" class="toolbar-button" type="button">Reset shared quality</button>
+            </div>
+            <div id="renderer-settings-fields"></div>
+          </details>
         </section>
         <section class="panel-section">
           <div class="section-heading">
@@ -93,10 +127,7 @@
                 <span>Move Speed</span>
                 <input class="text-input short-input" id="move-speed-input" type="text" inputmode="decimal" value="1.00">
               </label>
-              <label class="field" title="Limit the temporary low-FPS preview used while non-exposure values are being adjusted. A final render is submitted when input ends.">
-                <span>Frame Rate</span>
-                <input class="text-input short-input" id="render-fps-input" type="text" inputmode="decimal" value="60">
-              </label>
+
               <button class="toolbar-button" type="button" id="toggle-autorotate-button" aria-pressed="false" title="Enable or disable orbit auto-rotation.">Auto Rotate</button>
             </div>
           </details>
@@ -259,14 +290,7 @@
                 </details>
               </div>
               <div class="field-stack compact-fields" id="scene-render-section" hidden>
-                <label class="field" title="Choose the renderer quality preset.">
-                  <span>Quality</span>
-                  <select id="quality-select">
-                    <option value="fast">Fast</option>
-                    <option value="balanced" selected>Balanced</option>
-                    <option value="sharp">Sharp</option>
-                  </select>
-                </label>
+
 
                 <label class="field" title="Switch the viewer background palette.">
                   <span>Background</span>
@@ -312,15 +336,7 @@
                   </div>
                 </label>
 
-                <label class="field" title="Select the spherical harmonics level used for shading.">
-                  <span>SH Level</span>
-                  <select id="sh-select">
-                    <option value="0">SH0</option>
-                    <option value="1">SH1</option>
-                    <option value="2">SH2</option>
-                    <option value="3" selected>SH3</option>
-                  </select>
-                </label>
+
               </div>
 
               <div class="field-stack" id="scene-transform-section" hidden>
@@ -328,7 +344,7 @@
                   <button class="toolbar-button" type="button" id="toggle-gizmo-button" title="Show or hide the transform gizmo for the selected splat item.">Gizmo Off</button>
                   <button class="toolbar-button" type="button" id="gizmo-translate-button" title="Use translate arrows on the selected splat item.">Move</button>
                   <button class="toolbar-button" type="button" id="gizmo-rotate-button" title="Use rotation rings on the selected splat item.">Rotate</button>
-                  <button class="toolbar-button" type="button" id="gizmo-scale-button" title="Use scale handles on the selected splat item.">Scale</button>
+                  <button class="toolbar-button" type="button" id="gizmo-scale-button" title="Show scale handles. Every handle scales XYZ uniformly, matching the Scale field.">Scale</button>
                 </div>
                 <p class="inline-label">Rotate</p>
                 <div class="transform-row transform-row-quad">

@@ -6,8 +6,8 @@
 
 | Backend | Gaussian path | SH / color | Lighting and shadow boundary |
 | --- | --- | --- | --- |
-| Spark 2.0 (default) | Existing native Spark renderer | Source-dependent SH0–SH3 | Look-dev controls and selected-item animation remain active. Optional cached all-splat point-light occlusion supports static scenes; the shared static-baked SH0 below is also displayed. |
-| PlayCanvas 2.21.2 | Public `GSplatData` + `GSplatResource` unified GSplat renderer | SH0 appearance snapshot | Exposure, point lights, available occlusion, one-bounce preview, LUT results, and tone curves are evaluated in shared Linear sRGB CPU code. Animation remains Spark only. |
+| Spark 2.1 (default) | Existing native Spark renderer | Source-dependent SH0–SH3 | Look-dev controls and selected-item animation remain active. Optional cached all-splat point-light occlusion supports static scenes; the shared static-baked SH0 below is also displayed. |
+| PlayCanvas 2.22.0 | Public `GSplatData` + `GSplatResource` unified GSplat renderer | SH0 appearance snapshot | Exposure, point lights, available occlusion, one-bounce preview, LUT results, and tone curves are evaluated in shared Linear sRGB CPU code. Animation remains Spark only. |
 | Three.js r186dev | Instanced camera-facing anisotropic Gaussian ellipse quads with projected covariance and deterministic depth sorting | SH0 appearance snapshot | Exposure, point lights, available occlusion, one-bounce preview, LUT results, and tone curves are evaluated in shared Linear sRGB CPU code. Animation remains Spark only. |
 
 Alternate backends consume only the copied snapshot. They never render through
@@ -30,6 +30,52 @@ Three receives exact world-space Gaussian covariance, including non-uniform
 scale, shear, and reflection. Covariance is packed once per snapshot or edited
 item, then reused for camera-depth sorting and GPU projection. The separate
 static-bake transform restrictions below still apply.
+
+## Renderer controls and transforms
+
+**Renderer → Rendering settings** is collapsed on startup. It shows settings
+for the active backend, with per-control descriptions, upstream default values,
+and an official reference link. Changes apply immediately and survive backend
+switches and scene replacements in the current page. Reloading the page or
+**Reset defaults** restores the exposed defaults; reset affects only the active
+backend. Input ranges are viewer guardrails, not limits promised by upstream.
+
+Controls are ordered **Quality / Performance → Effects → Other**. Quality
+starts with the shared viewer preset, explicit pixel ratio (0 = automatic),
+frame-rate cap, and selected Spark item's SH degree. A pixel ratio of 2 costs
+roughly four times the pixels of 1. Shared controls have their own reset button;
+engine reset leaves them unchanged. Allocation-only and unsupported pipeline
+options are listed with reasons under **Quality options unavailable here**;
+the panel does not claim to expose every engine API.
+
+- [Spark 2.1.0](https://sparkjs.dev/docs/spark-renderer/): Gaussian support,
+  pixel radius, alpha cutoff, blur, falloff, focal adjustment, clipping, sorting,
+  2DGS, depth of field, LoD budget, LoD scale, inflation and foveation cones.
+  LoD controls require source LoD trees. A blank LoD budget restores the engine's
+  platform-dependent automatic budget.
+  The existing Quality preset also updates `maxStdDev`; Falloff is shared with
+  the Splats tab.
+- [PlayCanvas 2.22.0](https://api.playcanvas.com/engine/classes/GSplatParams.html):
+  Work-buffer precision (compact/large), Gaussian antialiasing, radial sorting, pixel-size cutoff, forward alpha cutoff,
+  and 2DGS. The viewer uses WebGL with CPU sorting and flat snapshots, so controls
+  specific to WebGPU or streamed LoD are omitted.
+- [Three.js WebGLRenderer](https://threejs.org/docs/pages/WebGLRenderer.html):
+  tone mapping, tone-mapping exposure, object sorting, plus material depth testing
+  and wireframe, plus the viewer shader's Gaussian support, alpha cutoff and
+  projected blur variance. Shader defaults preserve the existing 3-sigma,
+  zero-cutoff, zero-blur projection. Gaussian projection is a custom viewer shader; Three.js does
+  not define official defaults for that shader. The pinned r186dev comparison
+  build and Spark's compatible Three.js r180 host remain in place.
+
+These are display settings, separate from the shared look-dev appearance baked
+into exported PLY files. Three.js tone mapping is disabled by default; enabling
+it applies an additional display transform after the shared appearance snapshot.
+
+**Splats → Move / Rotate / Scale** enables the selected gizmo directly. A
+transparent helper pass displays it above all three backends without routing
+alternate splats through Spark. Scale handles apply uniform XYZ scaling, matching
+the single Scale input and saved transform contract. Brush editing and alignment
+point picking still require Spark.
 
 ## Color and PLY interchange
 

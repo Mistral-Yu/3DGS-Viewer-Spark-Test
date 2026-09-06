@@ -84,10 +84,9 @@ test('brush editing exposes relative controls, z-depth limiting, and viewport ov
   assert.match(source, /brushUndoStack\.push\(\{ itemId: item\.id, changes \}\)/);
 });
 
-test('alternate backends disable invisible viewport-only tools while keeping numeric edits available', () => {
+test('alternate backends retain Spark-only brush and alignment picking guards', () => {
   assert.match(source, /isSparkViewportEditingAvailable\(\)/);
   assert.match(source, /startAlignPointPick\(\)[\s\S]*?Switch to Spark to pick alignment points/);
-  assert.match(source, /syncTransformGizmo\(\)[\s\S]*?!this\.isSparkViewportEditingAvailable\(\)/);
   assert.match(source, /toggleBrushEditing\(\)[\s\S]*?Switch to Spark to use the viewport brush/);
   assert.match(source, /alignAddPointButton\.disabled = !viewportEditingAvailable/);
   assert.match(source, /toggleGizmoButton\.disabled = !viewportEditingAvailable/);

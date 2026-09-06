@@ -1,4 +1,5 @@
 import * as THREE from "./vendor/three/three.module.js";
+import { createRendererSettings, renderRendererSettings } from "./viewer-renderer-settings.mjs";
 import { OrbitControls } from "./vendor/three/examples/jsm/controls/OrbitControls.js";
 import { TransformControls } from "./vendor/three/examples/jsm/controls/TransformControls.js";
 import * as Spark from "./vendor/spark/spark.module.js";
@@ -1436,7 +1437,7 @@ const LIGHT_SHADOW_GPU_SLOT_LIMIT = 32;
         this.rotationPivot = null;
 
         this.renderer = new THREE.WebGLRenderer({
-          alpha: false,
+          alpha: true,
           antialias: false,
           powerPreference: "high-performance",
         });
@@ -1472,7 +1473,8 @@ const LIGHT_SHADOW_GPU_SLOT_LIMIT = 32;
         this.transformControls.size = 0.9;
         this.transformControls.space = "local";
         this.transformControlsHelper.visible = false;
-        this.scene.add(this.transformControlsHelper);
+        this.gizmoScene = new THREE.Scene();
+        this.gizmoScene.add(this.transformControlsHelper);
 
         this.firstPerson = new FirstPersonController(this.camera, this.renderer.domElement);
         this.firstPerson.setPointerEnabled(false);
@@ -1705,6 +1707,7 @@ const LIGHT_SHADOW_GPU_SLOT_LIMIT = 32;
           positionRangeScale: 1,
           quality: "balanced",
           renderFps: 60,
+          renderPixelRatio: 0,
           renderMode: "beauty",
           rotationX: 0,
           rotationY: 0,
@@ -1734,7 +1737,10 @@ const LIGHT_SHADOW_GPU_SLOT_LIMIT = 32;
           onTelemetry: (telemetry) => this.syncBackendTelemetry(telemetry),
         });
         this.syncUiScale();
+        this.sparkSettings = createRendererSettings("spark");
+        this.rendererCommonQuality = document.getElementById("renderer-common-quality");
         this.bindUi();
+        this.syncRendererSettingsUi();
         this.syncOpenFileAction();
         if (this.dom.sceneRenderSection && this.dom.sceneTransformSection) {
           this.dom.sceneRenderSection.parentElement?.insertBefore(
@@ -1856,6 +1862,37 @@ const LIGHT_SHADOW_GPU_SLOT_LIMIT = 32;
       }
 
       bindUi() {
+        const pixelRatioInput = document.getElementById("render-pixel-ratio-input");
+        pixelRatioInput?.addEventListener("change", () => {
+          const value = Number(pixelRatioInput.value);
+          if (!pixelRatioInput.value.trim() || !Number.isFinite(value) || (value !== 0 && (value < 0.25 || value > 4))) {
+            pixelRatioInput.setCustomValidity("Use 0 for Auto, or a pixel ratio from 0.25 to 4.");
+            pixelRatioInput.reportValidity();
+            pixelRatioInput.value = String(this.state.renderPixelRatio);
+            return;
+          }
+          pixelRatioInput.setCustomValidity("");
+          this.state.renderPixelRatio = value;
+          this.syncRendererPixelRatio();
+          this.onResize();
+          this.forceVisualRefresh(3);
+        });
+        pixelRatioInput?.addEventListener("input", () => pixelRatioInput.setCustomValidity(""));
+        document.getElementById("reset-shared-quality")?.addEventListener("click", () => {
+          this.state.renderPixelRatio = 0;
+          pixelRatioInput.value = "0";
+          pixelRatioInput.setCustomValidity("");
+          this.state.renderFps = 60;
+          this.applyRenderFps(false);
+          this.applyQualityPreset("balanced");
+          if (this.backendManager.isSparkActive() && this.getSelectedItem()) {
+            this.markStaticBakeStale("SH level reset");
+            this.state.shLevel = 3;
+            this.applyShLevel();
+            this.syncSelectedSplatControls(true);
+          }
+          this.forceVisualRefresh(3);
+        });
         this.dom.backendSelect?.addEventListener("change", (event) => this.setRendererBackend(event.target.value));
         this.dom.backgroundSelect.addEventListener("change", (event) => {
           this.state.background = event.target.value;
@@ -2272,7 +2309,8 @@ const LIGHT_SHADOW_GPU_SLOT_LIMIT = 32;
 
       syncRendererPixelRatio() {
         const preset = QUALITY[this.state.quality] || QUALITY.balanced;
-        this.renderer.setPixelRatio(Math.min(window.devicePixelRatio || 1, preset.maxPixelRatio));
+        const automatic = Math.min(window.devicePixelRatio || 1, preset.maxPixelRatio);
+        this.renderer.setPixelRatio(this.state.renderPixelRatio > 0 ? this.state.renderPixelRatio : automatic);
       }
 
       watchDevicePixelRatio() {
@@ -2298,6 +2336,41 @@ const LIGHT_SHADOW_GPU_SLOT_LIMIT = 32;
         if (this.dom.backendSelect && this.dom.backendSelect.value !== id) {
           this.dom.backendSelect.value = id;
         }
+        if (this.sparkSettings) this.syncRendererSettingsUi();
+      }
+
+      syncRendererSettingsUi() {
+        const container = document.getElementById("renderer-settings-fields");
+        if (!container || !this.backendManager || !this.sparkSettings) return;
+        const id = this.backendManager.activeId;
+        const backend = this.backendManager.activeBackend;
+        const values = id === "spark" ? this.sparkSettings : backend.settings;
+        if (id === "spark") {
+          for (const key of Object.keys(values)) values[key] = this.spark[key];
+        }
+        renderRendererSettings(container, id, values, (key, value) => {
+          values[key] = value;
+          if (id === "spark") {
+            if (key === "falloff") this.setFalloff(value);
+            else this.spark[key] = value;
+            this.spark.dirty = true;
+            this.queueSparkSceneUpdate();
+          } else backend.applySettings();
+          this.forceVisualRefresh(3);
+        }, () => {
+          Object.assign(values, createRendererSettings(id));
+          if (id === "spark") {
+            Object.assign(this.spark, values);
+            this.setFalloff(values.falloff);
+            this.spark.dirty = true;
+            this.queueSparkSceneUpdate();
+          } else backend.applySettings();
+          this.syncRendererSettingsUi();
+          this.forceVisualRefresh(3);
+        });
+        const shared = container.querySelector("#renderer-shared-quality");
+        if (shared && this.rendererCommonQuality) shared.append(this.rendererCommonQuality);
+        this.dom.shSelect.disabled = id !== "spark" || !this.getSelectedItem();
       }
 
       captureRendererSnapshot() {
@@ -2489,6 +2562,7 @@ const LIGHT_SHADOW_GPU_SLOT_LIMIT = 32;
             height,
             pixelRatio: this.renderer.getPixelRatio(),
           });
+          this.renderTransformOverlay(true);
         } catch (error) {
           const message = error instanceof Error ? error.message : "Renderer frame failed";
           this.updateStatus(`${this.backendManager.activeId} renderer error: ${message}`);
@@ -2628,6 +2702,7 @@ const LIGHT_SHADOW_GPU_SLOT_LIMIT = 32;
         if (this.backendManager?.isSparkActive() ?? true) {
           this.renderer.setRenderTarget(null);
           this.renderer.render(this.scene, this.camera);
+          this.renderTransformOverlay(false);
         } else {
           this.renderActiveBackendFrame();
         }
@@ -2638,6 +2713,29 @@ const LIGHT_SHADOW_GPU_SLOT_LIMIT = 32;
         this.renderInvalidated = false;
         if (this.pendingForcedFrames > 0) {
           this.pendingForcedFrames -= 1;
+        }
+      }
+
+      renderTransformOverlay(clearCanvas) {
+        // The input canvas also carries only the gizmo over alternate engines.
+        // Scene splats continue to be drawn exclusively by the chosen backend.
+        const alpha = this.renderer.getClearAlpha();
+        const autoClear = this.renderer.autoClear;
+        this.renderer.setRenderTarget(null);
+        try {
+          if (clearCanvas) {
+            this.renderer.setClearAlpha(0);
+            this.renderer.clear();
+          }
+          this.renderer.autoClear = false;
+          this.renderer.clearDepth();
+          if (this.transformControlsHelper.visible) {
+            this.transformControls.object?.updateWorldMatrix(true, false);
+            this.renderer.render(this.gizmoScene, this.camera);
+          }
+        } finally {
+          this.renderer.autoClear = autoClear;
+          this.renderer.setClearAlpha(alpha);
         }
       }
 
@@ -2818,6 +2916,7 @@ const LIGHT_SHADOW_GPU_SLOT_LIMIT = 32;
 
       syncSelectedSplatControls(syncInputs = true) {
         const item = this.getSelectedItem();
+        this.dom.shSelect.disabled = !(this.backendManager?.isSparkActive() ?? true) || !item;
         this.state.selectedExposure = item?.settings?.exposure ?? 0;
         this.state.toneCurve = normalizeToneCurveState(item?.settings?.toneCurve ?? buildToneCurveState());
         this.state.falloff = Number.isFinite(this.spark?.falloff)
@@ -4032,8 +4131,8 @@ const LIGHT_SHADOW_GPU_SLOT_LIMIT = 32;
       }
 
       toggleTransformGizmo() {
-        if (!this.isSparkViewportEditingAvailable()) {
-          this.updateStatus("Switch to Spark to use the viewport gizmo");
+        if (!this.getSelectedItem() && !this.getSelectedLight()) {
+          this.updateStatus("Select a splat or light to use the gizmo");
           return;
         }
         this.state.showGizmo = !this.state.showGizmo;
@@ -4043,13 +4142,14 @@ const LIGHT_SHADOW_GPU_SLOT_LIMIT = 32;
 
       setTransformGizmoMode(mode) {
         this.state.transformGizmoMode = ["translate", "rotate", "scale"].includes(mode) ? mode : "translate";
+        this.state.showGizmo = Boolean(this.getSelectedItem() || this.getSelectedLight());
         this.syncTransformGizmo();
         this.updateTransformGizmoButtons();
       }
 
       updateTransformGizmoButtons() {
         const lightSelected = Boolean(this.getSelectedLight());
-        const viewportEditingAvailable = this.isSparkViewportEditingAvailable();
+        const viewportEditingAvailable = Boolean(this.getSelectedItem() || lightSelected);
         const effectiveMode = lightSelected ? "translate" : this.state.transformGizmoMode;
         const gizmoVisible = viewportEditingAvailable && this.state.showGizmo;
         this.dom.toggleGizmoButton.classList.toggle("is-active", gizmoVisible);
@@ -4061,9 +4161,15 @@ const LIGHT_SHADOW_GPU_SLOT_LIMIT = 32;
             : "Move Gizmo Off";
           this.dom.lightGizmoButton.disabled = !viewportEditingAvailable;
         }
-        this.dom.gizmoTranslateButton.classList.toggle("is-active", effectiveMode === "translate");
-        this.dom.gizmoRotateButton.classList.toggle("is-active", effectiveMode === "rotate");
-        this.dom.gizmoScaleButton.classList.toggle("is-active", effectiveMode === "scale");
+        this.dom.gizmoTranslateButton.classList.toggle("is-active", gizmoVisible && effectiveMode === "translate");
+        this.dom.gizmoRotateButton.classList.toggle("is-active", gizmoVisible && effectiveMode === "rotate");
+        this.dom.gizmoScaleButton.classList.toggle("is-active", gizmoVisible && effectiveMode === "scale");
+        for (const [button, pressed] of [
+          [this.dom.toggleGizmoButton, gizmoVisible],
+          [this.dom.gizmoTranslateButton, gizmoVisible && effectiveMode === "translate"],
+          [this.dom.gizmoRotateButton, gizmoVisible && effectiveMode === "rotate"],
+          [this.dom.gizmoScaleButton, gizmoVisible && effectiveMode === "scale"],
+        ]) button.setAttribute("aria-pressed", String(pressed));
         this.dom.toggleGizmoButton.disabled = !viewportEditingAvailable;
         this.dom.gizmoTranslateButton.disabled = !viewportEditingAvailable;
         this.dom.gizmoRotateButton.disabled = !viewportEditingAvailable || lightSelected;
@@ -4075,10 +4181,10 @@ const LIGHT_SHADOW_GPU_SLOT_LIMIT = 32;
         const item = this.getSelectedItem();
         if (
           !this.state.showGizmo
-          || !this.isSparkViewportEditingAvailable()
           || (light && !light.visible)
           || (!light && (!item || !item.visible))
         ) {
+          if (this.transformControls.dragging) this.transformControls.pointerUp(null);
           this.transformControls.detach();
           this.transformControls.visible = false;
           this.transformControls.enabled = false;
@@ -4091,11 +4197,15 @@ const LIGHT_SHADOW_GPU_SLOT_LIMIT = 32;
           ? light.root
           : (mode === "translate" ? item.modelRoot : item.rotationPivot);
         if (!target) {
+          if (this.transformControls.dragging) this.transformControls.pointerUp(null);
           this.transformControls.detach();
           this.transformControls.visible = false;
           this.transformControls.enabled = false;
           this.transformControlsHelper.visible = false;
           return;
+        }
+        if (this.transformControls.dragging && (this.transformControls.object !== target || this.transformControls.mode !== mode)) {
+          this.transformControls.pointerUp(null);
         }
         this.transformControls.enabled = true;
         this.transformControls.visible = true;
@@ -4125,6 +4235,15 @@ const LIGHT_SHADOW_GPU_SLOT_LIMIT = 32;
           return;
         }
         this.markStaticBakeStale("Splat transform changed");
+        if (this.state.transformGizmoMode === "scale") {
+          // Scene transforms store one uniform scale. A Y/Z/plane handle must
+          // update that scalar as well, rather than silently saving only X.
+          const axis = this.transformControls.axis || "XYZ";
+          const component = axis.includes("X") ? "x" : axis.includes("Y") ? "y" : "z";
+          const scale = clampNumber(item.rotationPivot.scale[component], SCALE_LIMITS);
+          item.rotationPivot.scale.setScalar(scale);
+        }
+        item.modelRoot.updateWorldMatrix(true, true);
         this.state.translateX = item.modelRoot.position.x;
         this.state.translateY = item.modelRoot.position.y;
         this.state.translateZ = item.modelRoot.position.z;
@@ -5714,6 +5833,11 @@ const LIGHT_SHADOW_GPU_SLOT_LIMIT = 32;
           this.dom.falloffInput.value = falloff.toFixed(2);
         }
         this.spark.falloff = falloff;
+        if (this.sparkSettings) {
+          this.sparkSettings.falloff = falloff;
+          const input = document.getElementById("renderer-spark-falloff");
+          if (input) input.value = String(falloff);
+        }
         const item = this.getSelectedItem();
         this.sceneItems.forEach((sceneItem) => {
           sceneItem.settings.falloff = falloff;
@@ -7141,6 +7265,11 @@ const LIGHT_SHADOW_GPU_SLOT_LIMIT = 32;
         const preset = QUALITY[presetKey] || QUALITY.balanced;
         this.state.quality = presetKey in QUALITY ? presetKey : "balanced";
         this.spark.maxStdDev = preset.maxStdDev;
+        if (this.sparkSettings) {
+          this.sparkSettings.maxStdDev = preset.maxStdDev;
+          const input = document.getElementById("renderer-spark-maxStdDev");
+          if (input) input.value = String(preset.maxStdDev);
+        }
         this.syncRendererPixelRatio();
         this.dom.qualitySelect.value = this.state.quality;
         this.onResize();

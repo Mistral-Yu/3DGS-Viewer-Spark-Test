@@ -1451,7 +1451,7 @@ input[type="range"]:focus-visible {
 
 .viewer-stage > canvas.is-overlay-input {
   z-index: 1;
-  opacity: 0;
+  opacity: 1;
   pointer-events: auto;
 }
 
@@ -1474,6 +1474,26 @@ input[type="range"]:focus-visible {
 .backend-panel-workspace .section-heading {
   padding-bottom: 2px;
 }
+
+.renderer-settings-note,
+.renderer-setting small {
+  color: var(--muted);
+  font-size: 0.78rem;
+  line-height: 1.5;
+  overflow-wrap: anywhere;
+}
+
+.renderer-settings-note { margin: 8px 0; }
+.renderer-settings-group { min-width: 0; margin: 14px 0 0; padding: 8px 0 0; border: 0; border-top: 1px solid var(--line); }
+.renderer-settings-group legend { padding: 0 8px 0 0; color: var(--text); font-weight: 600; font-size: 0.9rem; }
+.renderer-setting { display: grid; gap: 5px; padding: 10px 0; border-top: 1px solid var(--line); }
+.renderer-setting-row { display: flex; align-items: center; justify-content: space-between; gap: 8px; font-size: 0.84rem; color: var(--text); }
+.renderer-setting-row > span { overflow-wrap: anywhere; min-width: 0; }
+.renderer-setting input[type="number"] { width: 90px; min-width: 0; flex-shrink: 0; }
+.renderer-setting input[type="checkbox"] { width: 16px; height: 16px; flex-shrink: 0; accent-color: var(--accent); }
+.renderer-setting select { min-width: 0; max-width: 55%; }
+.renderer-settings-footer { display: flex; flex-wrap: wrap; align-items: center; gap: 10px; padding-top: 8px; }
+.renderer-settings-footer a { color: var(--accent); font-size: 0.8rem; }
 
 .timeline-heading {
   align-items: center;

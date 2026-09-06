@@ -13,6 +13,7 @@ Keep these notices with redistributed copies, including static-site releases.
   - `vendor/three/three.core.js`
   - `vendor/three/examples/jsm/controls/OrbitControls.js`
   - `vendor/three/examples/jsm/controls/TransformControls.js`
+  - `vendor/three/examples/jsm/postprocessing/Pass.js` (r180)
   - `viewer.bundle.js` (Three.js r180)
   - `viewer-vendor-three-r186.bundle.js` (Three.js `186dev`, upstream commit
     `283a3b359d70bf6dc7b54bc129698fbb32be49a9`)
@@ -25,23 +26,25 @@ Copyright 2010-2025 Three.js Authors (r180).
 Copyright © 2010-2026 three.js authors (r186dev).
 The MIT license text below applies to both copies.
 
-### Spark
+### Spark 2.1.0
 
 - File:
   - `vendor/spark/spark.module.js`
   - `viewer.bundle.js`
 - Upstream:
-  - https://github.com/sparkjsdev/spark
+  - https://github.com/sparkjsdev/spark/releases/tag/v2.1.0
+- Distribution: `@sparkjsdev/spark@2.1.0`, `dist/spark.module.js`, copied without modification.
+- npm tarball integrity: `sha512-BRw+MuMzx0B3K8fDLQygt2OHEhYUV+41RX7btq9pZ3rCVrq42o57jW34VAIvC7JO/84DJh/1AutACV9ym6BfVg==`.
 - License:
   - MIT
 
 Copyright © 2025 WORLD LABS TECHNOLOGIES, INC.
 The MIT license text below applies to this runtime.
 
-### PlayCanvas 2.21.2
+### PlayCanvas 2.22.0
 
 - File: `viewer-vendor-playcanvas.bundle.js`
-- Upstream: https://github.com/playcanvas/engine/tree/v2.21.2
+- Upstream: https://github.com/playcanvas/engine/tree/v2.22.0
 - License: MIT
 
 Copyright (c) 2011-2026 PlayCanvas Ltd.

@@ -14,7 +14,7 @@ export const SH_C0 = 0.28209479177387814;
 export const RENDERER_MANIFEST = Object.freeze({
   spark: Object.freeze({
     id: "spark",
-    label: "Spark 2.0",
+    label: "Spark 2.1",
     summary: "Native Spark Gaussian renderer",
     capabilities: Object.freeze({
       gaussianRenderer: true,
@@ -27,7 +27,7 @@ export const RENDERER_MANIFEST = Object.freeze({
   }),
   playcanvas: Object.freeze({
     id: "playcanvas",
-    label: "PlayCanvas 2.21.2",
+    label: "PlayCanvas 2.22.0",
     summary: "PlayCanvas unified GSplat renderer",
     capabilities: Object.freeze({
       gaussianRenderer: true,

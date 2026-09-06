@@ -6,6 +6,7 @@ import {
   updateFlattenedSnapshotItemTransforms,
 } from "./renderer-contract.mjs";
 import { linearToSrgbChannel } from "./viewer-color.mjs";
+import { createRendererSettings, applyThreeRendererSettings } from "./viewer-renderer-settings.mjs";
 
 const EXPECTED_THREE_REVISION = "186dev";
 const BACKEND_VENDOR_DEFINITIONS = Object.freeze({
@@ -151,6 +152,7 @@ const setEntityTransform = (entity, worldMatrix) => {
 
 class PlayCanvasBackend {
   constructor({ onFrameRequest = null } = {}) {
+    this.settings = createRendererSettings("playcanvas");
     this.canvas = null;
     this.app = null;
     this.cameraEntity = null;
@@ -200,6 +202,22 @@ class PlayCanvasBackend {
     this.cameraEntity.camera.toneMapping = PlayCanvas.TONEMAP_NONE;
     this.cameraEntity.camera.horizontalFov = false;
     this.app.root.addChild(this.cameraEntity);
+    this.applySettings();
+  }
+
+  applySettings() {
+    if (this.app && this.hasSnapshot && this.app.scene.gsplat.radialSorting !== this.settings.radialSorting) {
+      // CPU sorting is otherwise triggered by camera/placement changes. Recreate
+      // through public APIs so changing the metric also sorts a stationary view.
+      const stage = this.canvas.parentElement;
+      const snapshot = this.settingsSnapshot;
+      this.dispose();
+      this.ensure(stage);
+      this.syncSnapshot(snapshot);
+      this.canvas.classList.add("is-active-backend");
+    }
+    if (this.app) Object.assign(this.app.scene.gsplat, this.settings);
+    this.onFrameRequest?.();
   }
 
   clear() {
@@ -214,6 +232,7 @@ class PlayCanvasBackend {
     if (!this.app) {
       return;
     }
+    this.settingsSnapshot = snapshot;
     const visibleItems = snapshot.items.filter((item) => item.visible && item.opacity.length);
     const resourcesById = new Map(this.resources.map((entry) => [entry.id, entry]));
     const topologyMatches = visibleItems.length === this.resources.length
@@ -337,7 +356,7 @@ class PlayCanvasBackend {
   get telemetry() {
     const device = this.app?.graphicsDevice;
     const renderer = device?.isWebGPU ? "WebGPU" : "WebGL";
-    return `PlayCanvas ${PlayCanvas.version || "2.21.2"} · ${renderer} · GSplat`;
+    return `PlayCanvas ${PlayCanvas.version || "2.22.0"} · ${renderer} · GSplat`;
   }
 
   dispose() {
@@ -366,6 +385,8 @@ attribute vec3 splatCovarianceOffDiagonal;
 attribute vec3 splatColor;
 attribute float splatOpacity;
 uniform vec2 renderSize;
+uniform float gaussianCutoff;
+uniform float preBlurVariance;
 varying vec2 vGaussianUv;
 varying vec3 vColor;
 varying float vOpacity;
@@ -389,9 +410,9 @@ void main() {
   vec2 focal = 0.5 * renderSize * vec2(projectionMatrix[0][0], projectionMatrix[1][1]);
   vec3 jacobianX = vec3(focal.x / viewDepth, 0.0, focal.x * viewCenter.x / (viewDepth * viewDepth));
   vec3 jacobianY = vec3(0.0, focal.y / viewDepth, focal.y * viewCenter.y / (viewDepth * viewDepth));
-  float covarianceXX = max(dot(jacobianX, covariance3d * jacobianX), 0.0001);
+  float covarianceXX = max(dot(jacobianX, covariance3d * jacobianX) + preBlurVariance, 0.0001);
   float covarianceXY = dot(jacobianX, covariance3d * jacobianY);
-  float covarianceYY = max(dot(jacobianY, covariance3d * jacobianY), 0.0001);
+  float covarianceYY = max(dot(jacobianY, covariance3d * jacobianY) + preBlurVariance, 0.0001);
   float mean = 0.5 * (covarianceXX + covarianceYY);
   float spread = sqrt(max(0.0, mean * mean - (covarianceXX * covarianceYY - covarianceXY * covarianceXY)));
   float eigenMajor = max(mean + spread, 0.0001);
@@ -400,11 +421,11 @@ void main() {
     ? normalize(vec2(covarianceXY, eigenMajor - covarianceXX))
     : (covarianceXX >= covarianceYY ? vec2(1.0, 0.0) : vec2(0.0, 1.0));
   vec2 axisMinor = vec2(-axisMajor.y, axisMajor.x);
-  vec2 pixelOffset = 3.0 * (corner.x * axisMajor * sqrt(eigenMajor) + corner.y * axisMinor * sqrt(eigenMinor));
+  vec2 pixelOffset = gaussianCutoff * (corner.x * axisMajor * sqrt(eigenMajor) + corner.y * axisMinor * sqrt(eigenMinor));
   vec2 ndcOffset = (2.0 * pixelOffset) / renderSize;
   vec3 ndcCenter = clipCenter.xyz / clipCenter.w;
   gl_Position = vec4((ndcCenter.xy + ndcOffset) * clipCenter.w, clipCenter.zw);
-  vGaussianUv = corner * 3.0;
+  vGaussianUv = corner * gaussianCutoff;
   vColor = splatColor;
   vOpacity = splatOpacity;
 }
@@ -412,13 +433,16 @@ void main() {
 
 const gaussianFragmentShader = /* glsl */`
 precision highp float;
+uniform float gaussianCutoff;
+uniform float alphaCutoff;
 varying vec2 vGaussianUv;
 varying vec3 vColor;
 varying float vOpacity;
 void main() {
   float radiusSquared = dot(vGaussianUv, vGaussianUv);
-  if (radiusSquared > 9.0) discard;
+  if (radiusSquared > gaussianCutoff * gaussianCutoff) discard;
   float alpha = clamp(vOpacity * exp(-0.5 * radiusSquared), 0.0, 1.0);
+  if (alpha < alphaCutoff) discard;
   gl_FragColor = vec4(vColor, alpha);
   #include <tonemapping_fragment>
   #include <colorspace_fragment>
@@ -428,6 +452,7 @@ void main() {
 
 class ThreeR186Backend {
   constructor() {
+    this.settings = createRendererSettings("three-r186");
     this.canvas = null;
     this.renderer = null;
     this.scene = null;
@@ -480,7 +505,12 @@ class ThreeR186Backend {
       blending: ThreeR186.CustomBlending,
       blendSrc: ThreeR186.OneFactor,
       blendDst: ThreeR186.OneMinusSrcAlphaFactor,
-      uniforms: { renderSize: { value: new ThreeR186.Vector2(1, 1) } },
+      uniforms: {
+        renderSize: { value: new ThreeR186.Vector2(1, 1) },
+        gaussianCutoff: { value: this.settings.gaussianCutoff },
+        alphaCutoff: { value: this.settings.alphaCutoff },
+        preBlurVariance: { value: this.settings.preBlurVariance },
+      },
       vertexShader: gaussianVertexShader,
       fragmentShader: gaussianFragmentShader,
     });
@@ -497,6 +527,11 @@ class ThreeR186Backend {
     this.boundsHelper = new ThreeR186.Box3Helper(this.boundsBox, 0xb7e7ff);
     this.boundsHelper.visible = false;
     this.scene.add(this.boundsHelper);
+    this.applySettings();
+  }
+
+  applySettings() {
+    applyThreeRendererSettings(this, ThreeR186);
   }
 
   syncSnapshot(snapshot) {
@@ -690,7 +725,7 @@ export class LookDevBackendManager {
 
   emitTelemetry() {
     const backend = RENDERER_MANIFEST[this.activeId];
-    const rendererTelemetry = this.activeBackend?.telemetry ?? "Spark 2.0 · native canvas";
+    const rendererTelemetry = this.activeBackend?.telemetry ?? "Spark 2.1 · native canvas";
     this.onTelemetry?.({
       id: this.activeId,
       label: backend.label,

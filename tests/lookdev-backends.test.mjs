@@ -646,7 +646,7 @@ test("package pins PlayCanvas and the exact HTTPS r186dev commit", () => {
   const lockfile = JSON.parse(read("package-lock.json"));
   assert.equal(lockfile.name, packageJson.name);
   assert.equal(lockfile.packages[""].name, packageJson.name);
-  assert.equal(packageJson.dependencies.playcanvas, "2.21.2");
+  assert.equal(packageJson.dependencies.playcanvas, "2.22.0");
   assert.equal(
     packageJson.dependencies["three-r186"],
     "https://codeload.github.com/mrdoob/three.js/tar.gz/283a3b359d70bf6dc7b54bc129698fbb32be49a9",
